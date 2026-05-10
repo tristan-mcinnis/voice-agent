@@ -1,7 +1,7 @@
 """Global hotkey to interrupt the bot mid-sentence.
 
 `LocalAudioTransport` has no AEC, so the mic is muted while the bot is speaking
-(see `local_audio.py`). That makes voice barge-in impossible — but a global
+(see `local_bot.py`). That makes voice barge-in impossible — but a global
 hotkey works fine. Pressing the hotkey from anywhere on the desktop pushes an
 `InterruptionTaskFrame` into the running pipeline, which Pipecat converts into
 a downstream `InterruptionFrame` that cancels the in-flight LLM and TTS.

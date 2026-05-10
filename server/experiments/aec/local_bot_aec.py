@@ -49,7 +49,8 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from aec_processor import AECMicProcessor, AECReferenceTap, AECState
-from local_audio import install_local_audio_lifecycle
+# NOTE: `local_audio` was deleted in the 2025-05-10 architecture deepening.
+# Copy `_install_local_audio_lifecycle()` from `server/local_bot.py` to fix.
 from session_log import SessionLog, SessionLogProcessor
 from voice_bot import build_components
 from wake_word import WakeWordGate

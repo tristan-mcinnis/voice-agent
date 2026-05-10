@@ -104,7 +104,7 @@ def build_components(
             spoken user turn is never picked up. Daily/WebRTC doesn't need it
             because the client UI sends a real user-turn signal.
         user_aggregator_params: Pass in to install custom mute / turn strategies
-            (see `local_audio.local_user_aggregator_params`). Daily/WebRTC
+            (see `local_bot._local_user_aggregator_params`). Daily/WebRTC
             transports leave this `None` because the browser handles AEC.
         session_log: Optional `SessionLog` instance. When provided, tool calls
             get logged as kebab-case events alongside user/bot speech.

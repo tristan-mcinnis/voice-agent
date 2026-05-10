@@ -36,16 +36,60 @@ from config import WakeWordConfig
 _NORMALIZE = re.compile(r"[^a-z0-9 ]+")
 
 
-def _normalize(text: str) -> str:
+# ---------------------------------------------------------------------------
+# Pure logic — testable without a pipeline
+# ---------------------------------------------------------------------------
+
+def normalize_phrase(text: str) -> str:
+    """Lowercase, strip punctuation — the canonical form for phrase matching."""
     return _NORMALIZE.sub(" ", text.lower()).strip()
 
+
+def check_transition(
+    *,
+    awake: bool,
+    wake_phrase: str,
+    sleep_phrase: str,
+    text: str,
+    is_final: bool,
+) -> tuple[bool, str | None]:
+    """Given current state and a transcript, return (new_awake, ack_text).
+
+    Args:
+        awake: Current awake state.
+        wake_phrase: The wake phrase (already normalized).
+        sleep_phrase: The sleep phrase (already normalized).
+        text: The transcript text.
+        is_final: True for TranscriptionFrame, False for interim.
+
+    Returns:
+        (new_awake, ack_text_or_None). ack_text is set when a state
+        transition produces a spoken acknowledgement.
+    """
+    normalized = normalize_phrase(text or "")
+
+    if not awake:
+        if is_final and wake_phrase and wake_phrase in normalized:
+            return True, None  # ack handled by caller via config
+        return False, None
+
+    # Awake: optionally sleep on phrase.
+    if is_final and sleep_phrase and sleep_phrase in normalized:
+        return False, None  # sleep ack handled by caller via config
+
+    return True, None
+
+
+# ---------------------------------------------------------------------------
+# FrameProcessor adapter
+# ---------------------------------------------------------------------------
 
 class WakeWordGate(FrameProcessor):
     def __init__(self, config: WakeWordConfig):
         super().__init__()
         self._cfg = config
-        self._wake = _normalize(config.phrase)
-        self._sleep = _normalize(config.sleep_phrase)
+        self._wake = normalize_phrase(config.phrase)
+        self._sleep = normalize_phrase(config.sleep_phrase)
         self._awake = config.start_awake
         self._last_activity = time.monotonic()
         self._idle_task: asyncio.Task | None = None
@@ -64,18 +108,29 @@ class WakeWordGate(FrameProcessor):
         await self.push_frame(frame, direction)
 
     async def _handle_transcript(self, frame):
-        text = _normalize(frame.text or "")
+        text = frame.text or ""
         is_final = isinstance(frame, TranscriptionFrame)
 
-        if not self._awake:
-            if is_final and self._wake and self._wake in text:
-                await self._wake_up()
-            # Drop everything else while asleep.
+        new_awake, _ = check_transition(
+            awake=self._awake,
+            wake_phrase=self._wake,
+            sleep_phrase=self._sleep,
+            text=text,
+            is_final=is_final,
+        )
+
+        if not self._awake and new_awake:
+            # Transitioning: asleep → awake.
+            await self._wake_up()
             return
 
-        # Awake: optionally sleep on phrase, otherwise pass through.
-        if is_final and self._sleep and self._sleep in text:
+        if self._awake and not new_awake:
+            # Transitioning: awake → asleep.
             await self._go_to_sleep(speak_ack=True)
+            return
+
+        # No transition — either stay asleep (drop frame) or stay awake (pass through).
+        if not self._awake:
             return
 
         self._last_activity = time.monotonic()
