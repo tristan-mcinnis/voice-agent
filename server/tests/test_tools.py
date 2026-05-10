@@ -27,6 +27,7 @@ load_dotenv()
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tools
+tools.register_all()  # explicit registration — no more import-time side effects
 
 
 PASS = "PASS"

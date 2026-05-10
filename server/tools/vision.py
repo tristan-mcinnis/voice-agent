@@ -28,7 +28,7 @@ class VisionChain:
     """Ordered list of vision providers. First success wins.
 
     Each provider is a ``config.VisionProvider``. The chain is immutable
-    after construction — no more ``set_vision_config()`` mutating module state.
+    after construction — no more mutable module state.
     """
 
     def __init__(self, providers: list[Any]) -> None:
@@ -72,32 +72,31 @@ class VisionChain:
         )
 
 
-# Module-level singleton — set once at startup.
-_chain: VisionChain | None = None
+# Module-level singleton — constructed once at startup via init_vision().
+_vision_chain: VisionChain | None = None
 
 
-def set_vision_config(providers: list[Any]) -> None:
-    """Initialise the vision chain from config at startup.
+def init_vision(providers: list[Any]) -> VisionChain:
+    """Initialise the vision chain once at startup.
 
     Called by ``voice_bot.build_components()``. Must be called before
     ``describe_image()`` or ``no_vision_message()``.
+
+    Returns the chain so callers can also pass it explicitly.
     """
-    global _chain
-    _chain = VisionChain(providers)
+    global _vision_chain
+    _vision_chain = VisionChain(providers)
+    return _vision_chain
 
 
-def _get_chain() -> VisionChain:
-    """Return the vision chain, raising if not yet configured.
-
-    Replaces the old silent-None-on-unconfigured behaviour with a loud
-    failure — temporal coupling made visible.
-    """
-    if _chain is None:
+def _get_vision() -> VisionChain:
+    """Return the vision chain, raising if not yet configured."""
+    if _vision_chain is None:
         raise RuntimeError(
             "Vision chain not configured. "
-            "Call set_vision_config() at startup before using describe_image()."
+            "Call init_vision() at startup before using describe_image()."
         )
-    return _chain
+    return _vision_chain
 
 
 # ---------------------------------------------------------------------------
@@ -285,9 +284,9 @@ def describe_image(image_path: str, prompt: str) -> str | None:
     """Walk the vision provider chain; first success wins.
 
     Delegates to the module-level ``VisionChain`` singleton, which must
-    be initialised via ``set_vision_config()`` at startup.
+    be initialised via ``init_vision()`` at startup.
     """
-    return _get_chain().describe(image_path, prompt)
+    return _get_vision().describe(image_path, prompt)
 
 
 def no_vision_message() -> str:
@@ -295,4 +294,4 @@ def no_vision_message() -> str:
 
     Delegates to the module-level ``VisionChain`` singleton.
     """
-    return _get_chain().no_vision_message()
+    return _get_vision().no_vision_message()

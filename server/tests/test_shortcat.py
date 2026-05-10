@@ -37,7 +37,7 @@ HERE = Path(__file__).resolve().parent
 SERVER = HERE.parent
 sys.path.insert(0, str(SERVER))
 
-from tools.vision import describe_image, set_vision_config  # noqa: E402
+from tools.vision import describe_image, init_vision  # noqa: E402
 from config import load_config  # noqa: E402
 
 
@@ -318,7 +318,7 @@ def main() -> int:
     # Initialize the vision provider chain — describe_image is a no-op without this.
     try:
         cfg = load_config()
-        set_vision_config(cfg.vision)
+        init_vision(cfg.vision)
         print(f"Vision providers: {[getattr(p, 'kind', '?') for p in cfg.vision]}", flush=True)
     except Exception as exc:
         print(f"WARN: vision config load failed: {exc}", flush=True)

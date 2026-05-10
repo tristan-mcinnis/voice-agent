@@ -1,55 +1,25 @@
-"""Memory tool — the agent's self-editing brain.
+"""Memory tool — thin adapter over MemoryLayer for the tool registry.
+
+The MemoryLayer module owns the file format, character limits, and
+operations. This tool class translates the LLM-facing action/target/content
+parameter schema into MemoryLayer method calls.
 
 Implements the Hermes-inspired multi-layered memory architecture:
   - USER.md: personal facts, preferences, user context (≤ 1,375 chars)
   - MEMORY.md: project facts, environment, learned lessons (≤ 2,200 chars)
 
-Entries are separated by `§` delimiters for high-density recall. The agent can
-add new entries (with pressure checks), replace existing ones via substring
-matching, or list current entries with indices.
-
-At session start, PromptBuilder loads these files as frozen snapshots injected
-into the system prompt. The stable prefix stays warm in provider-side caches.
+PromptBuilder reads these files as frozen snapshots via MemoryLayer.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
-from loguru import logger
-
-from agent.memory_store import USER_CHAR_LIMIT, MEMORY_CHAR_LIMIT  # noqa: F401  # re-exported
-from agent.paths import memories_dir
 from tools.registry import BaseTool, REGISTRY
+from tools.memory_layer import MemoryLayer, USER_CHAR_LIMIT, MEMORY_CHAR_LIMIT  # noqa: F401  # re-exported
 
-
-def _limit_for(target: str) -> int:
-    return USER_CHAR_LIMIT if target == "user" else MEMORY_CHAR_LIMIT
-
-
-def _load_entries(path: Path) -> list[str]:
-    """Load entries from a §-delimited memory file. Returns empty list if missing."""
-    if not path.exists():
-        return []
-    raw = path.read_text(encoding="utf-8").strip()
-    if not raw:
-        return []
-    return [e.strip() for e in raw.split("§") if e.strip()]
-
-
-def _save_entries(path: Path, entries: list[str]) -> None:
-    """Write entries back, joined by §. Creates parent dirs as needed."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    content = "\n§\n".join(entries).strip()
-    if content:
-        content += "\n"
-    path.write_text(content, encoding="utf-8")
-
-
-def _total_chars(entries: list[str]) -> int:
-    """Sum of entry lengths (excluding delimiters)."""
-    return sum(len(e) for e in entries)
+# Module-level instance — shared by the tool class and PromptBuilder.
+_layer = MemoryLayer()
 
 
 class MemoryTool(BaseTool):
@@ -58,15 +28,6 @@ class MemoryTool(BaseTool):
     The agent should use this to record facts that should survive across
     sessions: user preferences, project context, environment details,
     lessons learned, and important decisions.
-
-    Entry format: each entry is a block of text separated by `§` delimiters.
-    The file on disk looks like::
-
-        User prefers TypeScript over Python.
-        §
-        Project uses PostgreSQL 16 with PostGIS.
-        §
-        Deployed on Fly.io, us-east-1 region.
     """
 
     name = "memory"
@@ -135,136 +96,13 @@ Record facts that should survive across sessions:
         content: str = "",
         old_text: str = "",
     ) -> dict:
-        dir_ = memories_dir()
-        path = dir_ / f"{target.upper()}.md"
-        entries = _load_entries(path)
-        limit = _limit_for(target)
-        label = "USER.md" if target == "user" else "MEMORY.md"
-
         if action == "list":
-            return self._do_list(label, entries, limit)
-
+            return _layer.list_entries(target)
         if action == "add":
-            return self._do_add(label, path, entries, content, limit)
-
+            return _layer.add(target, content)
         if action == "replace":
-            return self._do_replace(label, path, entries, content, old_text)
-
+            return _layer.replace(target, content, old_text)
         return {"result": f"Unknown action {action!r}. Use 'add', 'replace', or 'list'."}
-
-    # ------------------------------------------------------------------
-    # Action implementations
-    # ------------------------------------------------------------------
-
-    def _do_list(self, label: str, entries: list[str], limit: int) -> dict:
-        if not entries:
-            return {
-                "result": f"{label} is empty ({_total_chars(entries)}/{limit} chars used).",
-                "entries": [],
-                "chars_used": 0,
-                "char_limit": limit,
-            }
-        indexed = {str(i): entry for i, entry in enumerate(entries)}
-        lines = [f"{label} ({_total_chars(entries)}/{limit} chars used):"]
-        for i, entry in enumerate(entries):
-            preview = entry if len(entry) <= 80 else entry[:77] + "..."
-            lines.append(f"  [{i}] {preview}")
-        return {
-            "result": "\n".join(lines),
-            "entries": indexed,
-            "chars_used": _total_chars(entries),
-            "char_limit": limit,
-        }
-
-    def _do_add(
-        self, label: str, path: Path, entries: list[str], content: str, limit: int
-    ) -> dict:
-        content = content.strip()
-        if not content:
-            return {"result": "Cannot add empty content."}
-
-        # Check for near-duplicate.
-        for entry in entries:
-            if content in entry or entry in content:
-                return {
-                    "result": (
-                        f"Similar entry already exists in {label}: "
-                        f"\"{entry if len(entry) <= 100 else entry[:97] + '...'}\". "
-                        "Use action='replace' to update it, or phrase differently."
-                    )
-                }
-
-        new_total = _total_chars(entries) + len(content)
-        if new_total > limit:
-            over_by = new_total - limit
-            current_list = self._do_list(label, entries, limit)["result"]
-            return {
-                "result": (
-                    f"Memory pressure: adding this entry ({len(content)} chars) would exceed "
-                    f"{label}'s {limit}-char limit by {over_by} chars "
-                    f"({_total_chars(entries)}/{limit} used). "
-                    f"Use action='list' to review entries and action='replace' to swap "
-                    f"a less important one, or shorten your content.\n\n{current_list}"
-                )
-            }
-
-        entries.append(content)
-        _save_entries(path, entries)
-        logger.info(f"memory: added {len(content)}-char entry to {label} ({_total_chars(entries)}/{limit})")
-        return {
-            "result": (
-                f"Added to {label} ({_total_chars(entries)}/{limit} chars used). "
-                f"Entry: \"{content if len(content) <= 100 else content[:97] + '...'}\""
-            ),
-            "chars_used": _total_chars(entries),
-            "char_limit": limit,
-        }
-
-    def _do_replace(
-        self,
-        label: str,
-        path: Path,
-        entries: list[str],
-        content: str,
-        old_text: str,
-    ) -> dict:
-        content = content.strip()
-        old_text = old_text.strip()
-        if not content:
-            return {"result": "Cannot replace with empty content."}
-
-        if old_text:
-            # Substring match — find the entry containing old_text.
-            for i, entry in enumerate(entries):
-                if old_text in entry:
-                    entries[i] = content
-                    _save_entries(path, entries)
-                    logger.info(f"memory: replaced entry {i} in {label}")
-                    return {
-                        "result": (
-                            f"Replaced entry [{i}] in {label}: "
-                            f"\"{entry if len(entry) <= 80 else entry[:77] + '...'}\" "
-                            f"→ \"{content if len(content) <= 80 else content[:77] + '...'}\""
-                        ),
-                        "replaced_index": i,
-                        "chars_used": _total_chars(entries),
-                        "char_limit": _limit_for(label.split(".")[0].lower()),
-                    }
-            return {
-                "result": (
-                    f"No entry in {label} contains {old_text!r}. "
-                    "Use action='list' to see current entries and their indices."
-                )
-            }
-
-        # No old_text — replace by index? Not supported yet. Fall back to list.
-        current_list = self._do_list(label, entries, _limit_for(label.split(".")[0].lower()))["result"]
-        return {
-            "result": (
-                "For 'replace', provide 'old_text' — a substring of the entry to replace. "
-                f"Here are the current entries:\n\n{current_list}"
-            )
-        }
 
 
 # Register on import — canonical name is 'memory'.

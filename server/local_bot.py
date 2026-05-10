@@ -66,11 +66,14 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
 )
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
-from config import load_config
+from config import init_config, get_config
 from connection_rendezvous import ConnectionRendezvous
 from processors import EchoSuppressor, SessionLog, SessionLogProcessor, WakeWordGate
 from hotkey_interrupt import install_interrupt_hotkey
-from voice_bot import build_components
+from voice_bot import build_components, set_agent_home
+
+# Set the agent home before any agent.* imports resolve VOICE_AGENT_HOME.
+set_agent_home()
 
 load_dotenv(override=True)
 
@@ -155,7 +158,7 @@ def _install_local_audio_lifecycle(
 # ---------------------------------------------------------------------------
 
 async def main():
-    cfg = load_config()
+    cfg = init_config()
     session_log = SessionLog.for_now()
     logger.info(f"Session log: {session_log.path}")
 

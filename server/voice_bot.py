@@ -36,15 +36,23 @@ from pipecat.transcriptions.language import Language
 
 import tools as tools_module
 from agent.prompt_builder import PromptBuilder
-from config import Config, load_config, require_api_key
-from tools.vision import set_vision_config
+from config import Config, get_config, load_config, require_api_key
+from tools.vision import init_vision
 
 
-# Project-local agent home — keeps voice-agent data separate from any other
-# agent system on this machine. Exported via env var so tools (e.g.
-# patch_memory) write to the same location the PromptBuilder reads from.
 _PROJECT_ROOT = Path(__file__).parent.parent
-os.environ.setdefault("VOICE_AGENT_HOME", str(_PROJECT_ROOT / ".voice-agent"))
+
+
+def set_agent_home() -> Path:
+    """Set the VOICE_AGENT_HOME env var and return the path.
+
+    Call once at startup before any memory or prompt code runs.
+    Uses setdefault so it's safe to call from tests that pre-configure
+    the env var.
+    """
+    home = _PROJECT_ROOT / ".voice-agent"
+    os.environ.setdefault("VOICE_AGENT_HOME", str(home))
+    return home
 
 
 @dataclass
@@ -63,8 +71,8 @@ def _language_from_hint(hint: str) -> Language:
     return getattr(Language, hint.upper())
 
 
-def _build_stt(config: Config) -> SonioxSTTService:
-    """Construct the STT service. Only Soniox is wired; add a branch for new providers."""
+def build_stt(config: Config) -> SonioxSTTService:
+    """Construct the STT service from config. Public — usable in tests."""
     cfg = config.stt
     return SonioxSTTService(
         api_key=require_api_key(cfg.api_key_env, for_what="Soniox STT"),
@@ -74,8 +82,8 @@ def _build_stt(config: Config) -> SonioxSTTService:
     )
 
 
-def _build_tts(config: Config) -> SonioxTTSService:
-    """Construct the TTS service. Only Soniox is wired; add a branch for new providers."""
+def build_tts(config: Config) -> SonioxTTSService:
+    """Construct the TTS service from config. Public — usable in tests."""
     cfg = config.tts
     return SonioxTTSService(
         api_key=require_api_key(cfg.api_key_env, for_what="Soniox TTS"),
@@ -83,8 +91,8 @@ def _build_tts(config: Config) -> SonioxTTSService:
     )
 
 
-def _build_llm(config: Config) -> OpenAILLMService:
-    """Construct the LLM service. Any OpenAI-compatible endpoint works by changing config.yaml."""
+def build_llm(config: Config) -> OpenAILLMService:
+    """Construct the LLM service from config. Public — usable in tests."""
     cfg = config.llm
     return OpenAILLMService(
         api_key=require_api_key(cfg.api_key_env, for_what=f"{cfg.provider} LLM"),
@@ -114,16 +122,18 @@ def build_components(
             transports leave this `None` because the browser handles AEC.
         session_log: Optional `SessionLog` instance. When provided, tool calls
             get logged as kebab-case events alongside user/bot speech.
-        config: Optional pre-loaded `Config`. Defaults to `load_config()`.
+        config: Optional pre-loaded `Config`. Defaults to `get_config()`.
     """
-    cfg = config or load_config()
+    cfg = config or get_config()
 
-    # Seed the vision chain once so describe_image() never calls load_config().
-    set_vision_config(cfg.vision)
+    # One-time setup: agent home directory, vision chain, tool registration.
+    set_agent_home()
+    init_vision(cfg.vision)
+    tools_module.register_all()
 
-    stt = _build_stt(cfg)
-    tts = _build_tts(cfg)
-    llm = _build_llm(cfg)
+    stt = build_stt(cfg)
+    tts = build_tts(cfg)
+    llm = build_llm(cfg)
 
     schemas = tools_module.REGISTRY.register_handlers(llm, session_log=session_log)
     tools = ToolsSchema(standard_tools=schemas)

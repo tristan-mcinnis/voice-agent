@@ -21,82 +21,16 @@ from __future__ import annotations
 
 import subprocess
 import time
-from dataclasses import dataclass
 from typing import Optional
 
-from tools._macos import is_macos, macos_only, osascript, frontmost_app_name
+from tools._macos import is_macos, macos_only, osascript
+from tools.ax_engine import AXEngine, AXElement
 from tools.registry import REGISTRY, BaseTool
+from tools.safety_gate import SafetyGate
 
-
-# ---------------------------------------------------------------------------
-# Safety gate ("Tirith"-style HITL)
-# ---------------------------------------------------------------------------
-
-# Substring patterns checked against frontmost app name + window title.
-# Lowercase. A match forces the agent to verbalize intent and call again
-# with confirm=True. Tune to taste — anything financial / credential / system.
-_SENSITIVE_PATTERNS = (
-    "1password", "lastpass", "bitwarden", "keychain", "keychain access",
-    "password", "secrets", "wallet",
-    "banking", "bank of america", "chase", "wells fargo", "citi",
-    "venmo", "paypal", "stripe", "square",
-    "system settings", "system preferences", "privacy & security",
-    "filevault", "firewall",
-    "delete", "erase", "format",
-)
-
-
-def _front_window_title() -> str:
-    """Return the title of the frontmost app's focused window, or ''."""
-    try:
-        from AppKit import NSWorkspace  # type: ignore
-        from ApplicationServices import (  # type: ignore
-            AXUIElementCreateApplication,
-            AXUIElementCopyAttributeValue,
-        )
-        app = NSWorkspace.sharedWorkspace().frontmostApplication()
-        if app is None:
-            return ""
-        ref = AXUIElementCreateApplication(int(app.processIdentifier()))
-        err, win = AXUIElementCopyAttributeValue(ref, "AXFocusedWindow", None)
-        if err or win is None:
-            return ""
-        err, title = AXUIElementCopyAttributeValue(win, "AXTitle", None)
-        return "" if err else str(title or "")
-    except Exception:
-        return ""
-
-
-def _sensitive_context() -> Optional[str]:
-    """Return a description of the sensitive app/window if any, else None."""
-    try:
-        proc = frontmost_app_name()
-    except Exception:
-        proc = ""
-    title = _front_window_title()
-    haystack = f"{proc} {title}".lower()
-    for pat in _SENSITIVE_PATTERNS:
-        if pat in haystack:
-            return f"{proc} — {title}" if title else proc
-    return None
-
-
-def _refuse_if_sensitive(action: str, confirm: bool) -> Optional[str]:
-    """Return a refusal message if the front context is sensitive and unconfirmed.
-
-    The string is designed for the LLM to read and react: tell the user, get
-    a verbal yes, then re-call with confirm=True.
-    """
-    if confirm:
-        return None
-    ctx = _sensitive_context()
-    if ctx is None:
-        return None
-    return (
-        f"BLOCKED: about to {action} in a sensitive context ({ctx}). "
-        "Speak this aloud to the user, ask them to confirm, then call again "
-        "with confirm=true. Do NOT proceed silently."
-    )
+# Module-level instances — constructed once, shared by all computer-use tools.
+_gate = SafetyGate()
+_ax_engine = AXEngine()
 
 
 def _import_pyautogui():
@@ -111,143 +45,6 @@ def _import_pyautogui():
     pyautogui.FAILSAFE = False
     pyautogui.PAUSE = 0.05
     return pyautogui
-
-
-# ---------------------------------------------------------------------------
-# AX element listing
-# ---------------------------------------------------------------------------
-
-@dataclass
-class _AXElement:
-    role: str
-    label: str
-    x: int
-    y: int
-    w: int
-    h: int
-
-    def center(self) -> tuple[int, int]:
-        return (self.x + self.w // 2, self.y + self.h // 2)
-
-    def short(self, idx: int) -> str:
-        label = self.label or "(unlabeled)"
-        # Trim long labels — Spotify/Finder produce huge "description" strings.
-        if len(label) > 80:
-            label = label[:77] + "…"
-        role = self.role.replace("AX", "")
-        return f"[{idx}] {role:<10} {label}  @({self.x + self.w // 2},{self.y + self.h // 2})"
-
-
-# Roles we consider interactive. AXStaticText included so the agent can also
-# discover labels next to unlabeled icons (e.g. song titles in Spotify rows).
-_INTERACTIVE_ROLES = {
-    "AXButton", "AXMenuItem", "AXMenuButton", "AXPopUpButton",
-    "AXTextField", "AXTextArea", "AXSearchField",
-    "AXLink", "AXCheckBox", "AXRadioButton",
-    "AXTabGroup", "AXTab", "AXRow", "AXCell",
-    "AXImage", "AXStaticText",
-}
-
-
-# Walk the AX tree of the frontmost app via the native macOS Accessibility
-# C API (through PyObjC). ~50x faster than AppleScript's "entire contents"
-# on heavy apps like IDEs and Spotify, which routinely timeout there.
-def _ax_list(max_elements: int = 600, max_depth: int = 25) -> tuple[str, list[_AXElement]]:
-    """Return (frontmost_process_name, elements) via AXUIElementRef walking.
-
-    Bounded by max_elements / max_depth so a runaway tree (web-view content,
-    IDE outline panes) can't hang the voice loop.
-    """
-    from AppKit import NSWorkspace  # type: ignore
-    from ApplicationServices import (  # type: ignore
-        AXUIElementCreateApplication,
-        AXUIElementCopyAttributeValue,
-        AXValueGetValue,
-        kAXValueCGPointType,
-        kAXValueCGSizeType,
-    )
-
-    ws = NSWorkspace.sharedWorkspace()
-    front_app = ws.frontmostApplication()
-    if front_app is None:
-        return "(unknown)", []
-    proc_name = str(front_app.localizedName() or "")
-    pid = int(front_app.processIdentifier())
-
-    app_ref = AXUIElementCreateApplication(pid)
-
-    def _attr(ref, name):
-        err, value = AXUIElementCopyAttributeValue(ref, name, None)
-        if err:
-            return None
-        return value
-
-    def _point(value) -> Optional[tuple[float, float]]:
-        if value is None:
-            return None
-        success, pt = AXValueGetValue(value, kAXValueCGPointType, None)
-        return (pt.x, pt.y) if success else None
-
-    def _size(value) -> Optional[tuple[float, float]]:
-        if value is None:
-            return None
-        success, sz = AXValueGetValue(value, kAXValueCGSizeType, None)
-        return (sz.width, sz.height) if success else None
-
-    def _label(ref) -> str:
-        for attr in ("AXTitle", "AXValue", "AXDescription", "AXHelp", "AXLabel"):
-            v = _attr(ref, attr)
-            if v:
-                s = str(v).strip()
-                if s:
-                    return s
-        return ""
-
-    elements: list[_AXElement] = []
-
-    def _walk(ref, depth: int) -> None:
-        if len(elements) >= max_elements or depth > max_depth:
-            return
-        role = _attr(ref, "AXRole")
-        if role and str(role) in _INTERACTIVE_ROLES:
-            pos = _point(_attr(ref, "AXPosition"))
-            sz = _size(_attr(ref, "AXSize"))
-            if pos and sz and sz[0] > 0 and sz[1] > 0:
-                elements.append(_AXElement(
-                    role=str(role),
-                    label=_label(ref),
-                    x=int(pos[0]), y=int(pos[1]),
-                    w=int(sz[0]), h=int(sz[1]),
-                ))
-        children = _attr(ref, "AXChildren") or []
-        for child in children:
-            _walk(child, depth + 1)
-
-    # Start from the focused / main window if available, else app root.
-    window = _attr(app_ref, "AXFocusedWindow") or _attr(app_ref, "AXMainWindow")
-    if window is None:
-        windows = _attr(app_ref, "AXWindows") or []
-        for w in windows:
-            _walk(w, 0)
-    else:
-        _walk(window, 0)
-
-    # Drop exact duplicates (AX often double-counts wrappers and their labels).
-    seen: set[tuple] = set()
-    unique: list[_AXElement] = []
-    for e in elements:
-        key = (e.role, e.label, e.x, e.y, e.w, e.h)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(e)
-    return proc_name, unique
-
-
-# Module-level cache: last listing the agent saw, keyed by process. Lets
-# `click_element(index=N)` resolve indices without re-walking the AX tree.
-_LAST_ELEMENTS: dict[str, list[_AXElement]] = {}
-_LAST_PROCESS: list[str] = []  # stack to remember most recent
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +97,9 @@ class ListUIElementsTool(BaseTool):
         if not is_macos():
             return macos_only("list_ui_elements")
         try:
-            proc, elements = _ax_list()
+            proc, elements, display = _ax_engine.list_frontmost(
+                filter=filter, max_items=max_items
+            )
         except subprocess.CalledProcessError as exc:
             err = (exc.stderr or "").strip() or str(exc)
             return (
@@ -311,52 +110,18 @@ class ListUIElementsTool(BaseTool):
         except Exception as exc:
             return f"Could not read UI elements: {type(exc).__name__}: {exc}"
 
-        _LAST_ELEMENTS[proc] = elements
-        if proc in _LAST_PROCESS:
-            _LAST_PROCESS.remove(proc)
-        _LAST_PROCESS.append(proc)
-
         if not elements:
             return (
                 f"No interactive UI elements found in {proc}. The app may use "
                 "a non-native (Electron/canvas) UI — try take_screenshot + click_at."
             )
 
-        # Apply optional filter for the LLM display, but the cache holds the full
-        # list so click_element indices remain stable across filtered/unfiltered calls.
-        view = elements
-        if filter:
-            f = filter.lower()
-            view = [e for e in elements if f in e.label.lower() or f in e.role.lower()]
-            if not view:
-                return f"No elements in {proc} match filter {filter!r}. Try a broader term."
-
-        truncated = False
-        if len(view) > max_items:
-            view = view[:max_items]
-            truncated = True
-
-        # Indices are into the full (unfiltered) list so click_element is stable.
-        idx_lookup = {id(e): i for i, e in enumerate(elements)}
-        lines = [f"{proc}: {len(elements)} interactive elements"]
-        if filter:
-            lines[0] += f" ({len(view)} match filter {filter!r})"
-        for e in view:
-            lines.append(e.short(idx_lookup[id(e)]))
-        if truncated:
-            lines.append(f"... (truncated to {max_items}; refine with filter=)")
-        return "\n".join(lines)
+        return display
 
 
-def _resolve_element(index: int) -> Optional[_AXElement]:
+def _resolve_element(index: int) -> Optional[AXElement]:
     """Look up an element by index in the most recently listed process."""
-    if not _LAST_PROCESS:
-        return None
-    proc = _LAST_PROCESS[-1]
-    elems = _LAST_ELEMENTS.get(proc, [])
-    if 0 <= index < len(elems):
-        return elems[index]
-    return None
+    return _ax_engine.resolve(index)
 
 
 @REGISTRY.register
@@ -390,7 +155,7 @@ class ClickElementTool(BaseTool):
     def execute(self, index: int, double: bool = False, confirm: bool = False) -> str:
         if not is_macos():
             return macos_only("click_element")
-        gate = _refuse_if_sensitive(f"click element [{index}]", confirm)
+        gate = _gate.check(f"click element [{index}]", confirm)
         if gate:
             return gate
         elem = _resolve_element(index)
@@ -446,7 +211,7 @@ class ClickAtTool(BaseTool):
     def execute(self, x: int, y: int, double: bool = False, button: str = "left", confirm: bool = False) -> str:
         if not is_macos():
             return macos_only("click_at")
-        gate = _refuse_if_sensitive(f"click at ({x},{y})", confirm)
+        gate = _gate.check(f"click at ({x},{y})", confirm)
         if gate:
             return gate
         try:
@@ -490,7 +255,7 @@ class TypeTextTool(BaseTool):
         if not is_macos():
             return macos_only("type_text")
         preview = text if len(text) <= 30 else text[:27] + "..."
-        gate = _refuse_if_sensitive(f"type {preview!r}", confirm)
+        gate = _gate.check(f"type {preview!r}", confirm)
         if gate:
             return gate
         try:
@@ -537,7 +302,7 @@ class PressKeyTool(BaseTool):
     def execute(self, keys: str, confirm: bool = False) -> str:
         if not is_macos():
             return macos_only("press_key")
-        gate = _refuse_if_sensitive(f"press {keys}", confirm)
+        gate = _gate.check(f"press {keys}", confirm)
         if gate:
             return gate
         try:
@@ -583,7 +348,7 @@ class ScrollTool(BaseTool):
     def execute(self, amount: int, x: Optional[int] = None, y: Optional[int] = None, confirm: bool = False) -> str:
         if not is_macos():
             return macos_only("scroll")
-        gate = _refuse_if_sensitive(f"scroll {amount:+d}", confirm)
+        gate = _gate.check(f"scroll {amount:+d}", confirm)
         if gate:
             return gate
         try:
@@ -639,15 +404,15 @@ class ShortcatClickTool(BaseTool):
     def execute(self, label: str, confirm: bool = False) -> str:
         if not is_macos():
             return macos_only("shortcat_click")
-        gate = _refuse_if_sensitive(f"shortcat_click {label!r}", confirm)
+        gate = _gate.check(f"shortcat_click {label!r}", confirm)
         if gate:
             return gate
 
         # Lazy config import — keeps this tool's dependencies isolated and
         # leaves the rest of the registry usable when config.yaml is absent.
         try:
-            from config import load_config
-            cfg = load_config().shortcat
+            from config import get_config
+            cfg = get_config().shortcat
         except Exception as exc:
             return f"shortcat config unavailable: {type(exc).__name__}: {exc}"
         if not cfg.enabled:

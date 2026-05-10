@@ -1,7 +1,17 @@
 """Voice-bot runtime configuration loader.
 
 Reads `config.yaml` (next to this file by default) into typed dataclasses.
-Lookup is cached so the file is parsed once per process.
+
+Usage::
+
+    from config import init_config, get_config
+
+    init_config()                    # called once at startup
+    cfg = get_config()               # anywhere after init
+
+    # Or parse a file without caching (tests, tools that need a fresh read):
+    from config import load_config
+    cfg = load_config(Path("test_config.yaml"))
 
 Schema mirrors `config.yaml`:
 
@@ -16,7 +26,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -126,8 +135,8 @@ class Config:
     hotkey: HotkeyConfig
 
 
-@lru_cache(maxsize=1)
-def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
+def _parse_config(path: Path) -> Config:
+    """Parse a YAML file into a Config. Pure parser — no caching."""
     with open(path) as fh:
         data = yaml.safe_load(fh) or {}
 
@@ -160,6 +169,46 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
         turn=turn,
         hotkey=hotkey,
     )
+
+
+# ---------------------------------------------------------------------------
+# Explicit single-load: init_config() once at startup, get_config() everywhere else.
+# No lru_cache footgun — the cache lifetime is visible.
+# ---------------------------------------------------------------------------
+
+_config: Config | None = None
+
+
+def init_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
+    """Load config once at startup. Idempotent — subsequent calls return the first result.
+
+    Call this in ``main()`` before anything touches config-dependent code.
+    """
+    global _config
+    if _config is None:
+        _config = _parse_config(path)
+    return _config
+
+
+def get_config() -> Config:
+    """Return the config loaded by ``init_config()``.
+
+    Raises RuntimeError if ``init_config()`` hasn't been called yet.
+    """
+    if _config is None:
+        raise RuntimeError(
+            "Config not initialised. Call init_config() at startup first."
+        )
+    return _config
+
+
+def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
+    """Parse a config file. Stateless — no caching.
+
+    Prefer ``init_config()`` + ``get_config()`` for the normal startup path.
+    Use this directly for tests, tools, or alternate config files.
+    """
+    return _parse_config(path)
 
 
 def require_api_key(env_var: str, *, for_what: str) -> str:

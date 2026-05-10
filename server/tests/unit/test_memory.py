@@ -1,19 +1,16 @@
-"""Unit tests for memory tool — entry loading, saving, add/replace/list actions."""
+"""Unit tests for memory layer — entry loading, saving, add/replace/list actions."""
 
 import os
 import tempfile
 from pathlib import Path
 
 import pytest
-from tools.memory import (
-    MemoryTool,
-    _load_entries,
-    _save_entries,
-    _total_chars,
-    _limit_for,
+from tools.memory_layer import (
+    MemoryLayer,
     USER_CHAR_LIMIT,
     MEMORY_CHAR_LIMIT,
 )
+from tools.memory_layer import _load_entries, _save_entries, _total_chars, _limit_for
 
 
 class TestLoadSaveEntries:
@@ -60,28 +57,28 @@ class TestLoadSaveEntries:
         assert _limit_for("memory") == MEMORY_CHAR_LIMIT
 
 
-class TestMemoryToolActions:
-    """Integration-style tests on MemoryTool with temp directories."""
+class TestMemoryLayerActions:
+    """Integration-style tests on MemoryLayer with temp directories."""
 
     @pytest.fixture(autouse=True)
     def setup(self, monkeypatch):
         self._tmpdir = tempfile.TemporaryDirectory()
         monkeypatch.setitem(os.environ, "VOICE_AGENT_HOME", self._tmpdir.name)
-        self.tool = MemoryTool()
+        self.layer = MemoryLayer()
         yield
         self._tmpdir.cleanup()
 
     def test_list_empty(self):
-        result = self.tool.execute(action="list", target="user")
+        result = self.layer.list_entries("user")
         assert "is empty" in result["result"]
         assert result["chars_used"] == 0
 
     def test_list_empty_memory(self):
-        result = self.tool.execute(action="list", target="memory")
+        result = self.layer.list_entries("memory")
         assert "is empty" in result["result"]
 
     def test_add_simple(self):
-        result = self.tool.execute(action="add", target="user", content="User likes Python.")
+        result = self.layer.add("user", "User likes Python.")
         assert "Added" in result["result"]
         assert result["chars_used"] == len("User likes Python.")
 
@@ -90,27 +87,26 @@ class TestMemoryToolActions:
         assert "User likes Python." in entries
 
     def test_add_then_list(self):
-        self.tool.execute(action="add", target="user", content="Fact 1")
-        self.tool.execute(action="add", target="user", content="Fact 2")
-        result = self.tool.execute(action="list", target="user")
+        self.layer.add("user", "Fact 1")
+        self.layer.add("user", "Fact 2")
+        result = self.layer.list_entries("user")
         assert "[0]" in result["result"]
         assert "[1]" in result["result"]
         assert result["chars_used"] > 0
 
     def test_add_near_duplicate_rejected(self):
-        self.tool.execute(action="add", target="user", content="User uses VS Code.")
-        result = self.tool.execute(action="add", target="user", content="uses VS Code")
+        self.layer.add("user", "User uses VS Code.")
+        result = self.layer.add("user", "uses VS Code")
         assert "Similar entry already exists" in result["result"]
 
     def test_add_empty_content_rejected(self):
-        result = self.tool.execute(action="add", target="user", content="")
+        result = self.layer.add("user", "")
         assert "Cannot add empty" in result["result"]
 
     def test_replace_by_old_text(self):
-        self.tool.execute(action="add", target="memory", content="Project uses Python 3.12.")
-        result = self.tool.execute(
-            action="replace",
-            target="memory",
+        self.layer.add("memory", "Project uses Python 3.12.")
+        result = self.layer.replace(
+            "memory",
             content="Project uses Python 3.14.",
             old_text="Python 3.12",
         )
@@ -118,27 +114,22 @@ class TestMemoryToolActions:
         assert result["replaced_index"] == 0
 
     def test_replace_nonexistent_old_text(self):
-        self.tool.execute(action="add", target="memory", content="Foo bar baz.")
-        result = self.tool.execute(
-            action="replace",
-            target="memory",
+        self.layer.add("memory", "Foo bar baz.")
+        result = self.layer.replace(
+            "memory",
             content="New content",
             old_text="nonexistent",
         )
         assert "No entry" in result["result"]
 
     def test_replace_without_old_text_shows_list(self):
-        self.tool.execute(action="add", target="memory", content="Some fact.")
-        result = self.tool.execute(
-            action="replace", target="memory", content="New"
-        )
+        self.layer.add("memory", "Some fact.")
+        result = self.layer.replace("memory", content="New")
         assert "provide 'old_text'" in result["result"].lower()
 
     def test_replace_empty_content_rejected(self):
-        self.tool.execute(action="add", target="memory", content="Some fact.")
-        result = self.tool.execute(
-            action="replace", target="memory", content="", old_text="Some"
-        )
+        self.layer.add("memory", "Some fact.")
+        result = self.layer.replace("memory", content="", old_text="Some")
         assert "Cannot replace with empty" in result["result"]
 
 
@@ -149,34 +140,27 @@ class TestMemoryPressure:
     def setup(self, monkeypatch):
         self._tmpdir = tempfile.TemporaryDirectory()
         monkeypatch.setitem(os.environ, "VOICE_AGENT_HOME", self._tmpdir.name)
-        self.tool = MemoryTool()
+        self.layer = MemoryLayer()
 
         # Pre-fill with entries near the limit.
         # USER limit is 1375. Add enough to leave < 50 chars.
         big_entry = "x" * (USER_CHAR_LIMIT - 10)
-        self.tool.execute(action="add", target="user", content=big_entry)
+        self.layer.add("user", big_entry)
         yield
         self._tmpdir.cleanup()
 
     def test_pressure_reported_when_over_limit(self):
-        result = self.tool.execute(action="add", target="user", content="y" * 50)
+        result = self.layer.add("user", "y" * 50)
         assert "Memory pressure" in result["result"]
 
     def test_add_under_limit_succeeds(self):
-        result = self.tool.execute(action="add", target="user", content="hi")
+        result = self.layer.add("user", "hi")
         assert "Added" in result["result"]
 
     def test_replace_does_not_check_pressure(self):
         """Replace should always work since you're swapping, not growing."""
-
-        class FakeTool(MemoryTool):
-            def _do_replace(self, label, path, entries, content, old_text):
-                # Bypass the empty content check for this test
-                entries[0] = "replaced"
-                from tools.memory import _save_entries
-                _save_entries(path, entries)
-                return {"result": "Replaced.", "replaced_index": 0}
-
-        # This test verifies the principle — replace doesn't have a
-        # pressure check in its code path (only add does).
-        assert True  # architectural property, not runtime assertion
+        # After pre-filling with x*1365, replace with x*1365 — same size.
+        # Replace doesn't have a pressure check — only add does.
+        self.layer.replace("user", content="z" * (USER_CHAR_LIMIT - 10), old_text="x" * 10)
+        result = self.layer.list_entries("user")
+        assert "z" * 50 in result["result"]

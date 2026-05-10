@@ -1,45 +1,70 @@
 """Voice-bot tools — multimodal function-call capabilities.
 
-Importing this package registers all tools on the global REGISTRY.
 The registry, base class, and handler wiring live in `registry.py`.
 Domain-specific tool implementations live in:
   - files.py     — file system operations, shell, search
-  - desktop.py   — macOS desktop automation (clipboard, browser, capture, terminal, system info)
+  - capture.py   — vision capture (screenshot, webcam, window, region, display)
+  - desktop.py   — macOS desktop automation (clipboard, browser, terminal, system info)
+  - computer_use.py — computer-use tools (AX listing, clicks, keys, Shortcat)
+  - grounding_vision.py — vision-based UI element grounding
   - web.py       — web search and external APIs
-  - vision.py    — image description chain (no tool classes, called by desktop.py)
+  - memory.py    — persistent memory management
+  - search_history.py — past session conversation search
 
-Backward-compat callables (e.g. ``tools.read_file(...)``) delegate to the
-canonical ``BaseTool.execute()`` implementations via the REGISTRY.
+Call ``register_all()`` once at startup to import and register every tool.
+Importing this package alone does NOT trigger registration — the caller
+controls when tools are wired.
 """
+
+from __future__ import annotations
+
+from loguru import logger
 
 from tools.registry import BaseTool, REGISTRY, ToolRegistry  # noqa: F401
 
-# Side-effect imports: each module registers its tools on REGISTRY at import time.
-import tools.files     # noqa: F401
-import tools.capture   # noqa: F401
-import tools.desktop   # noqa: F401
-import tools.computer_use  # noqa: F401
-import tools.grounding_vision  # noqa: F401
-import tools.web       # noqa: F401
-import tools.memory    # noqa: F401
-import tools.search_history  # noqa: F401
+# ---------------------------------------------------------------------------
+# Explicit registration — call register_all() once at startup.
+# No more import-time side effects. Missing dependencies disable individual
+# tools; they don't crash the entire package.
+# ---------------------------------------------------------------------------
 
-# Reassign tools whose names collide with submodule names (memory → tools/memory.py,
-# search_history → tools/search_history.py). Submodule imports bind the module object
-# to the package namespace, which shadows __getattr__. We override those here.
-# All other tools resolve via __getattr__ below.
-memory = REGISTRY.get("memory").execute
-search_history = REGISTRY.get("search_history").execute
-patch_memory = REGISTRY.get("memory").execute  # legacy alias
+# (module, friendly_name) pairs. Each module registers its tools via
+# @REGISTRY.register decorators that fire at class-definition time.
+_TOOL_MODULES: list[tuple[str, str]] = [
+    ("tools.files", "file tools"),
+    ("tools.capture", "capture tools"),
+    ("tools.desktop", "desktop tools"),
+    ("tools.computer_use", "computer-use tools"),
+    ("tools.grounding_vision", "grounding-vision tools"),
+    ("tools.web", "web tools"),
+    ("tools.memory", "memory tools"),
+    ("tools.search_history", "search-history tools"),
+]
+
+
+def register_all() -> None:
+    """Import every tool module, logging which succeed and which are skipped.
+
+    Call once at startup (e.g. from ``voice_bot.build_components()``).
+    After this returns, ``REGISTRY`` is populated and ``register_handlers()``
+    can wire tools onto the LLM.
+    """
+    for module_name, label in _TOOL_MODULES:
+        try:
+            __import__(module_name)
+        except ImportError as exc:
+            logger.warning(f"tools: skipping {label} ({module_name}) — import failed: {exc}")
+        except Exception as exc:
+            logger.warning(f"tools: skipping {label} ({module_name}) — {type(exc).__name__}: {exc}")
+    logger.info(f"tools: {len(REGISTRY.all())} registered")
 
 
 # ---------------------------------------------------------------------------
 # Module-level __getattr__ — auto-resolves tool names from the registry.
-# No more per-tool boilerplate. Adding a tool = one file; __init__.py never changes.
+# For backward compat: `tools.read_file(...)` → `REGISTRY.get("read_file").execute(...)`
 # ---------------------------------------------------------------------------
 
-# Attribute name → registry tool name. Only needed for aliases (e.g. the
-# compat name differs from the tool's `name` field). Most names are 1:1.
+# Attribute name → registry tool name. Only needed for aliases.
 _COMPAT_ALIASES: dict[str, str] = {
     "patch_file": "patch",
 }
