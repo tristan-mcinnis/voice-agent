@@ -12,19 +12,22 @@ from pathlib import Path
 from typing import Optional
 
 
-DEFAULT_MEMORIES_PATH = Path.home() / ".hermes" / "memories"
+def _default_memories_path() -> Path:
+    """Default memories directory when no custom base_path is given."""
+    return Path.cwd() / ".voice-agent" / "memories"
 
 
 class MemoryStore:
     """Loads bounded memory snapshots from disk.
 
-    The base path defaults to ``~/.hermes/memories/``. Each load method
-    returns the file content wrapped in XML-like tags so the LLM can
-    distinguish the cognitive-stack layers.
+    The base path defaults to ``./.voice-agent/memories/`` (relative to the
+    current working directory). Each load method returns the file content
+    wrapped in XML-like tags so the LLM can distinguish the cognitive-stack
+    layers.
     """
 
     def __init__(self, base_path: Optional[Path] = None) -> None:
-        self.base_path = (base_path or DEFAULT_MEMORIES_PATH).expanduser().resolve()
+        self.base_path = (base_path or _default_memories_path()).expanduser().resolve()
         self.base_path.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------

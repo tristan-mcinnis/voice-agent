@@ -18,23 +18,22 @@ from typing import Optional
 
 from agent.memory_store import MemoryStore
 
-# Fallback identity when ~/.hermes/SOUL.md is missing or empty.
+# Fallback identity when SOUL.md is missing or empty.
 DEFAULT_AGENT_IDENTITY = """You are a friendly multimodal voice assistant.
 Your output will be spoken aloud — keep answers brief, conversational,
 and free of markdown or special characters."""
 
 # Project-context discovery priority ladder. First match wins.
 _CONTEXT_PRIORITY = [
-    ".hermes.md",
-    "HERMES.md",
+    ".voice-agent.md",
     "AGENTS.md",
     "CLAUDE.md",
     ".cursorrules",
 ]
 
 
-def _get_agent_home() -> Path:
-    return Path.home() / ".hermes"
+def _default_agent_home() -> Path:
+    return Path.cwd() / ".voice-agent"
 
 
 class PromptBuilder:
@@ -45,8 +44,12 @@ class PromptBuilder:
         memory_store: Optional[MemoryStore] = None,
         registry=None,
         default_identity: Optional[str] = None,
+        agent_home: Optional[Path] = None,
     ) -> None:
-        self.memory_store = memory_store or MemoryStore()
+        self.agent_home = (agent_home or _default_agent_home()).expanduser().resolve()
+        self.memory_store = memory_store or MemoryStore(
+            base_path=self.agent_home / "memories"
+        )
         self.registry = registry
         self.default_identity = default_identity or DEFAULT_AGENT_IDENTITY
 
@@ -55,13 +58,13 @@ class PromptBuilder:
     # ------------------------------------------------------------------
 
     def load_soul_md(self) -> str:
-        """Load the agent's identity from ``~/.hermes/SOUL.md``.
+        """Load the agent's identity from ``<agent_home>/SOUL.md``.
 
         Falls back to ``default_identity`` (usually the config's
         ``system_prompt``) when the file is missing or contains only
         template comments.
         """
-        soul_path = _get_agent_home() / "SOUL.md"
+        soul_path = self.agent_home / "SOUL.md"
         if soul_path.exists():
             content = soul_path.read_text(encoding="utf-8").strip()
             # Heuristic: ignore files that are only HTML comments, markdown
@@ -104,12 +107,12 @@ class PromptBuilder:
         return self.registry.capabilities_summary()
 
     def get_relevant_skills_index(self, _user_input: str = "") -> str:
-        """List available skills from ``~/.hermes/skills/``.
+        """List available skills from ``<agent_home>/skills/``.
 
         Each skill is a directory containing a ``SKILL.md`` file. The
         index extracts the first substantive line as a one-line summary.
         """
-        skills_dir = _get_agent_home() / "skills"
+        skills_dir = self.agent_home / "skills"
         if not skills_dir.exists():
             return ""
 

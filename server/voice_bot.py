@@ -14,6 +14,7 @@ plugs in by changing `llm.provider`, `llm.base_url`, `llm.model`,
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -36,6 +37,13 @@ from pipecat.transcriptions.language import Language
 import tools as tools_module
 from agent.prompt_builder import PromptBuilder
 from config import Config, load_config, require_api_key
+
+
+# Project-local agent home — keeps voice-agent data separate from any other
+# agent system on this machine. Exported via env var so tools (e.g.
+# patch_memory) write to the same location the PromptBuilder reads from.
+_PROJECT_ROOT = Path(__file__).parent.parent
+os.environ.setdefault("VOICE_AGENT_HOME", str(_PROJECT_ROOT / ".voice-agent"))
 
 
 @dataclass
@@ -128,6 +136,7 @@ def build_components(
     prompt_builder = PromptBuilder(
         registry=tools_module.REGISTRY,
         default_identity=cfg.system_prompt,
+        agent_home=project_root / ".voice-agent",
     )
     system_prompt = prompt_builder.build(
         user_input=initial_user_message or "",

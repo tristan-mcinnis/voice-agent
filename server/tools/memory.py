@@ -6,10 +6,19 @@ sessions (which load fresh read-only snapshots) inherit the new facts.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
 from tools.registry import BaseTool, REGISTRY
+
+
+def _agent_memories_dir() -> Path:
+    """Return the memories directory, respecting VOICE_AGENT_HOME if set."""
+    home = os.environ.get("VOICE_AGENT_HOME")
+    if home:
+        return Path(home) / "memories"
+    return Path.cwd() / ".voice-agent" / "memories"
 
 
 class PatchMemoryTool(BaseTool):
@@ -44,7 +53,7 @@ class PatchMemoryTool(BaseTool):
     speak_text: Optional[str] = None
 
     def execute(self, file: str, insight: str, operation: str = "append") -> dict:
-        memories_dir = Path.home() / ".hermes" / "memories"
+        memories_dir = _agent_memories_dir()
         memories_dir.mkdir(parents=True, exist_ok=True)
         target = memories_dir / file
 
