@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import wave
+from pathlib import Path
 
 from dotenv import load_dotenv
 from websockets.asyncio.client import connect
@@ -15,7 +16,7 @@ from websockets.asyncio.client import connect
 load_dotenv()
 API_KEY = os.getenv("SONIOX_API_KEY")
 URL = "wss://stt-rt.soniox.com/transcribe-websocket"
-AUDIO_FILE = "test_tts.wav"
+AUDIO_FILE = str(Path(__file__).resolve().parent / "test_tts.wav")
 
 
 async def test_stt():

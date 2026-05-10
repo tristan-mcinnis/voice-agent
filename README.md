@@ -31,9 +31,9 @@ python local_bot.py
 Standalone smoke tests:
 
 ```bash
-python test_tts.py    # writes test_tts.wav (Soniox TTS WebSocket)
-python test_stt.py    # transcribes test_tts.wav (run test_tts.py first)
-python test_tools.py  # exercises every tool in tools.TOOLS
+python tests/test_tts.py    # writes test_tts.wav (Soniox TTS WebSocket)
+python tests/test_stt.py    # transcribes test_tts.wav (run test_tts.py first)
+python tests/test_tools.py  # exercises every tool in tools.TOOLS
 ```
 
 ## Wake word
@@ -80,8 +80,9 @@ server/
 ├── config.yaml         # Provider/model/voice/prompt/vision/wake-word config
 ├── mlx_vision.py       # In-process MLX vision describer (Apple-Silicon only)
 ├── session_log.py      # Per-session kebab-case JSONL event logger
-├── test_stt.py         # Soniox STT smoke test
-├── test_tts.py         # Soniox TTS smoke test
-├── test_tools.py       # Tool registry smoke test
+├── tests/              # Standalone smoke tests
+│   ├── test_stt.py     #   Soniox STT WebSocket test
+│   ├── test_tts.py     #   Soniox TTS WebSocket test
+│   └── test_tools.py   #   Tool registry smoke test
 └── requirements.txt
 ```

@@ -29,9 +29,9 @@ cp config.example.yaml config.yaml  # or customise from the example
 
 ```bash
 python local_bot.py          # mic/speakers voice loop
-python test_stt.py           # Soniox STT WebSocket smoke test (needs test_tts.wav)
-python test_tts.py           # Soniox TTS WebSocket smoke test (writes test_tts.wav)
-python test_tools.py         # Smoke-tests every registered tool (pass --vision for captures)
+python tests/test_stt.py       # Soniox STT WebSocket smoke test (needs test_tts.wav)
+python tests/test_tts.py       # Soniox TTS WebSocket smoke test (writes test_tts.wav)
+python tests/test_tools.py     # Smoke-tests every registered tool (pass --vision for captures)
 ```
 
 ## Package layout
@@ -57,6 +57,11 @@ server/
     echo_suppressor.py  #   drops STT frames while bot speaks (no-AEC workaround)
     wake_word.py        #   wake-word gate (asleep/awake state machine)
     session_log.py      #   per-session JSONL logger + SessionLogProcessor
+
+  tests/                # standalone smoke tests
+    test_stt.py         #   Soniox STT WebSocket test
+    test_tts.py         #   Soniox TTS WebSocket test
+    test_tools.py       #   tool registry smoke test
 
   docs/adr/             # architecture decision records
   experiments/aec/      # archived Speex AEC experiment (voice barge-in)

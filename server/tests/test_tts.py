@@ -7,6 +7,7 @@ import os
 import json
 import base64
 import wave
+from pathlib import Path
 from dotenv import load_dotenv
 from websockets.asyncio.client import connect
 
@@ -64,12 +65,13 @@ async def test_tts():
 
         if audio_chunks:
             audio = b"".join(audio_chunks)
-            with wave.open("test_tts.wav", "wb") as wf:
+            output_path = Path(__file__).resolve().parent / "test_tts.wav"
+            with wave.open(str(output_path), "wb") as wf:
                 wf.setnchannels(1)
                 wf.setsampwidth(2)
                 wf.setframerate(24000)
                 wf.writeframes(audio)
             # 24kHz mono 16-bit = 48000 bytes/sec
-            print(f"Saved test_tts.wav ({len(audio)} bytes, {len(audio)/48000:.1f}s)")
+            print(f"Saved {output_path} ({len(audio)} bytes, {len(audio)/48000:.1f}s)")
 
 asyncio.run(test_tts())

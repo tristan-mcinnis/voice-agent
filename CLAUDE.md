@@ -42,12 +42,12 @@ python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 cp config.example.yaml config.yaml   # first-time setup
 python local_bot.py                  # mic/speakers loop
-python test_stt.py                   # Soniox STT WebSocket smoke test (needs test_tts.wav)
-python test_tts.py                   # Soniox TTS WebSocket smoke test (writes test_tts.wav)
-python test_tools.py                 # Smoke-tests every tool in tools.REGISTRY
+python tests/test_stt.py               # Soniox STT WebSocket smoke test (needs test_tts.wav)
+python tests/test_tts.py               # Soniox TTS WebSocket smoke test (writes test_tts.wav)
+python tests/test_tools.py             # Smoke-tests every tool in tools.REGISTRY
 ```
 
-There is no pytest suite — `test_stt.py` / `test_tts.py` / `test_tools.py` are
+There is no pytest suite — `tests/test_stt.py` / `tests/test_tts.py` / `tests/test_tools.py` are
 run directly as scripts.
 
 ## Architecture

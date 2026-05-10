@@ -13,7 +13,7 @@ venv/
 # Logs / generated
 logs/
 server/logs/
-server/test_tts.wav
+server/tests/test_tts.wav
 
 # OS / editor
 .DS_Store
