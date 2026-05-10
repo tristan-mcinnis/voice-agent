@@ -75,6 +75,7 @@ def main() -> int:
 
     want_webcam = "--webcam" in sys.argv
     want_vision = "--vision" in sys.argv
+    want_computer = "--computer-use" in sys.argv
 
     # --- Text ---------------------------------------------------------------
     run("read_clipboard", tools.read_clipboard)
@@ -167,6 +168,38 @@ def main() -> int:
 
     # --- Demo ---------------------------------------------------------------
     run("get_current_weather", tools.get_current_weather, "San Francisco, CA", "fahrenheit")
+
+    # --- Computer-use -------------------------------------------------------
+    # Read-only by default (list_ui_elements is non-destructive). The mouse/key
+    # tools are gated behind --computer-use because they actually move things.
+    run("list_ui_elements (frontmost app)", tools.list_ui_elements)
+    run("list_ui_elements (filter='button')", tools.list_ui_elements, "button")
+
+    if want_computer:
+        # Move the cursor and put it back — proves pyautogui is wired up.
+        try:
+            import pyautogui
+            origin = pyautogui.position()
+            run("mouse_move (+5px and back)", lambda: (
+                tools.mouse_move(origin.x + 5, origin.y, duration=0.05),
+                tools.mouse_move(origin.x, origin.y, duration=0.05),
+            )[1])
+        except ImportError:
+            skip("mouse_move", "pyautogui not installed")
+        # Press a no-op key combo (Cmd+Shift+. is a Finder hidden-files toggle —
+        # generally safe but reversible. Skip the actual press to avoid surprises.)
+        skip("press_key", "skipped to avoid mutating frontmost app — wire manually")
+        skip("type_text", "skipped to avoid typing into frontmost app — wire manually")
+        skip("click_element", "skipped — would actually click; test interactively")
+        skip("click_at", "skipped — would actually click; test interactively")
+        skip("scroll", "skipped — would scroll frontmost window; test interactively")
+    else:
+        skip("mouse_move", "pass --computer-use to run")
+        skip("click_element", "pass --computer-use to run (still skipped for safety)")
+        skip("click_at", "pass --computer-use to run (still skipped for safety)")
+        skip("type_text", "pass --computer-use to run (still skipped for safety)")
+        skip("press_key", "pass --computer-use to run (still skipped for safety)")
+        skip("scroll", "pass --computer-use to run (still skipped for safety)")
 
     # --- Registry sanity ----------------------------------------------------
     print("\n" + "=" * 72)

@@ -18,6 +18,7 @@ from tools.registry import BaseTool, REGISTRY, ToolRegistry  # noqa: F401
 import tools.files     # noqa: F401
 import tools.capture   # noqa: F401
 import tools.desktop   # noqa: F401
+import tools.computer_use  # noqa: F401
 import tools.web       # noqa: F401
 import tools.memory    # noqa: F401
 import tools.search_history  # noqa: F401
@@ -68,6 +69,15 @@ list_browser_tabs = _compat("list_browser_tabs")
 get_frontmost_app = _compat("get_frontmost_app")
 list_running_apps = _compat("list_running_apps")
 read_terminal_output = _compat("read_terminal_output")
+
+# -- computer_use.py compat --------------------------------------------------
+list_ui_elements = _compat("list_ui_elements")
+click_element = _compat("click_element")
+click_at = _compat("click_at")
+type_text = _compat("type_text")
+press_key = _compat("press_key")
+scroll = _compat("scroll")
+mouse_move = _compat("mouse_move")
 
 # -- web.py compat -----------------------------------------------------------
 web_search = _compat("web_search")

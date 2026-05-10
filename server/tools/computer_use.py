@@ -1,0 +1,664 @@
+"""Computer-use tools — drive the macOS GUI like a Hermes-style vision-action agent.
+
+Two complementary paths:
+
+  1. **AX path (primary, Shortcat-style).** ``list_ui_elements`` walks the
+     macOS Accessibility tree of the frontmost app and returns every clickable
+     element with a label + screen coordinates. ``click_element(index)`` then
+     clicks the chosen one. Reliable for native apps (Spotify, Finder, Mail,
+     System Settings…) because the labels come from the OS, not the pixels.
+
+  2. **Coordinate path (fallback).** ``click_at(x, y)``, ``type_text``,
+     ``press_key``, ``scroll`` — for apps with poor AX (Electron, canvas,
+     games). The agent screenshots, reasons about coordinates, then acts.
+
+Mouse/keyboard input goes through pyautogui (lazy-imported, soft dep). AX
+enumeration goes through AppleScript via ``System Events`` — same pattern as
+the rest of ``tools/desktop.py``.
+
+Cache: ``list_ui_elements`` populates ``_LAST_ELEMENTS`` so ``click_element``
+can resolve an index without the LLM having to round-trip coordinates.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+from tools.registry import REGISTRY, BaseTool
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _is_macos() -> bool:
+    return sys.platform == "darwin"
+
+
+def _macos_only(label: str) -> str:
+    return f"{label} only works on macOS — current platform is {sys.platform}."
+
+
+def _osascript(script: str, *, timeout: float = 8.0) -> str:
+    result = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True, text=True, timeout=timeout, check=True,
+    )
+    return result.stdout.strip()
+
+
+def _frontmost_process() -> str:
+    return _osascript(
+        'tell application "System Events" to '
+        'return name of first application process whose frontmost is true'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Safety gate ("Tirith"-style HITL)
+# ---------------------------------------------------------------------------
+
+# Substring patterns checked against frontmost app name + window title.
+# Lowercase. A match forces the agent to verbalize intent and call again
+# with confirm=True. Tune to taste — anything financial / credential / system.
+_SENSITIVE_PATTERNS = (
+    "1password", "lastpass", "bitwarden", "keychain", "keychain access",
+    "password", "secrets", "wallet",
+    "banking", "bank of america", "chase", "wells fargo", "citi",
+    "venmo", "paypal", "stripe", "square",
+    "system settings", "system preferences", "privacy & security",
+    "filevault", "firewall",
+    "delete", "erase", "format",
+)
+
+
+def _front_window_title() -> str:
+    """Return the title of the frontmost app's focused window, or ''."""
+    try:
+        from AppKit import NSWorkspace  # type: ignore
+        from ApplicationServices import (  # type: ignore
+            AXUIElementCreateApplication,
+            AXUIElementCopyAttributeValue,
+        )
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        if app is None:
+            return ""
+        ref = AXUIElementCreateApplication(int(app.processIdentifier()))
+        err, win = AXUIElementCopyAttributeValue(ref, "AXFocusedWindow", None)
+        if err or win is None:
+            return ""
+        err, title = AXUIElementCopyAttributeValue(win, "AXTitle", None)
+        return "" if err else str(title or "")
+    except Exception:
+        return ""
+
+
+def _sensitive_context() -> Optional[str]:
+    """Return a description of the sensitive app/window if any, else None."""
+    try:
+        proc = _frontmost_process()
+    except Exception:
+        proc = ""
+    title = _front_window_title()
+    haystack = f"{proc} {title}".lower()
+    for pat in _SENSITIVE_PATTERNS:
+        if pat in haystack:
+            return f"{proc} — {title}" if title else proc
+    return None
+
+
+def _refuse_if_sensitive(action: str, confirm: bool) -> Optional[str]:
+    """Return a refusal message if the front context is sensitive and unconfirmed.
+
+    The string is designed for the LLM to read and react: tell the user, get
+    a verbal yes, then re-call with confirm=True.
+    """
+    if confirm:
+        return None
+    ctx = _sensitive_context()
+    if ctx is None:
+        return None
+    return (
+        f"BLOCKED: about to {action} in a sensitive context ({ctx}). "
+        "Speak this aloud to the user, ask them to confirm, then call again "
+        "with confirm=true. Do NOT proceed silently."
+    )
+
+
+def _import_pyautogui():
+    """Lazy import. Returns the module or raises ImportError with a clean msg."""
+    try:
+        import pyautogui
+    except ImportError as exc:
+        raise ImportError(
+            "pyautogui not installed. Run: pip install pyautogui"
+        ) from exc
+    # Disable the failsafe corner — voice users can't easily yank the mouse.
+    pyautogui.FAILSAFE = False
+    pyautogui.PAUSE = 0.05
+    return pyautogui
+
+
+# ---------------------------------------------------------------------------
+# AX element listing
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _AXElement:
+    role: str
+    label: str
+    x: int
+    y: int
+    w: int
+    h: int
+
+    def center(self) -> tuple[int, int]:
+        return (self.x + self.w // 2, self.y + self.h // 2)
+
+    def short(self, idx: int) -> str:
+        label = self.label or "(unlabeled)"
+        # Trim long labels — Spotify/Finder produce huge "description" strings.
+        if len(label) > 80:
+            label = label[:77] + "…"
+        role = self.role.replace("AX", "")
+        return f"[{idx}] {role:<10} {label}  @({self.x + self.w // 2},{self.y + self.h // 2})"
+
+
+# Roles we consider interactive. AXStaticText included so the agent can also
+# discover labels next to unlabeled icons (e.g. song titles in Spotify rows).
+_INTERACTIVE_ROLES = {
+    "AXButton", "AXMenuItem", "AXMenuButton", "AXPopUpButton",
+    "AXTextField", "AXTextArea", "AXSearchField",
+    "AXLink", "AXCheckBox", "AXRadioButton",
+    "AXTabGroup", "AXTab", "AXRow", "AXCell",
+    "AXImage", "AXStaticText",
+}
+
+
+# Walk the AX tree of the frontmost app via the native macOS Accessibility
+# C API (through PyObjC). ~50x faster than AppleScript's "entire contents"
+# on heavy apps like IDEs and Spotify, which routinely timeout there.
+def _ax_list(max_elements: int = 600, max_depth: int = 25) -> tuple[str, list[_AXElement]]:
+    """Return (frontmost_process_name, elements) via AXUIElementRef walking.
+
+    Bounded by max_elements / max_depth so a runaway tree (web-view content,
+    IDE outline panes) can't hang the voice loop.
+    """
+    from AppKit import NSWorkspace  # type: ignore
+    from ApplicationServices import (  # type: ignore
+        AXUIElementCreateApplication,
+        AXUIElementCopyAttributeValue,
+        AXValueGetValue,
+        kAXValueCGPointType,
+        kAXValueCGSizeType,
+    )
+
+    ws = NSWorkspace.sharedWorkspace()
+    front_app = ws.frontmostApplication()
+    if front_app is None:
+        return "(unknown)", []
+    proc_name = str(front_app.localizedName() or "")
+    pid = int(front_app.processIdentifier())
+
+    app_ref = AXUIElementCreateApplication(pid)
+
+    def _attr(ref, name):
+        err, value = AXUIElementCopyAttributeValue(ref, name, None)
+        if err:
+            return None
+        return value
+
+    def _point(value) -> Optional[tuple[float, float]]:
+        if value is None:
+            return None
+        success, pt = AXValueGetValue(value, kAXValueCGPointType, None)
+        return (pt.x, pt.y) if success else None
+
+    def _size(value) -> Optional[tuple[float, float]]:
+        if value is None:
+            return None
+        success, sz = AXValueGetValue(value, kAXValueCGSizeType, None)
+        return (sz.width, sz.height) if success else None
+
+    def _label(ref) -> str:
+        for attr in ("AXTitle", "AXValue", "AXDescription", "AXHelp", "AXLabel"):
+            v = _attr(ref, attr)
+            if v:
+                s = str(v).strip()
+                if s:
+                    return s
+        return ""
+
+    elements: list[_AXElement] = []
+
+    def _walk(ref, depth: int) -> None:
+        if len(elements) >= max_elements or depth > max_depth:
+            return
+        role = _attr(ref, "AXRole")
+        if role and str(role) in _INTERACTIVE_ROLES:
+            pos = _point(_attr(ref, "AXPosition"))
+            sz = _size(_attr(ref, "AXSize"))
+            if pos and sz and sz[0] > 0 and sz[1] > 0:
+                elements.append(_AXElement(
+                    role=str(role),
+                    label=_label(ref),
+                    x=int(pos[0]), y=int(pos[1]),
+                    w=int(sz[0]), h=int(sz[1]),
+                ))
+        children = _attr(ref, "AXChildren") or []
+        for child in children:
+            _walk(child, depth + 1)
+
+    # Start from the focused / main window if available, else app root.
+    window = _attr(app_ref, "AXFocusedWindow") or _attr(app_ref, "AXMainWindow")
+    if window is None:
+        windows = _attr(app_ref, "AXWindows") or []
+        for w in windows:
+            _walk(w, 0)
+    else:
+        _walk(window, 0)
+
+    # Drop exact duplicates (AX often double-counts wrappers and their labels).
+    seen: set[tuple] = set()
+    unique: list[_AXElement] = []
+    for e in elements:
+        key = (e.role, e.label, e.x, e.y, e.w, e.h)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(e)
+    return proc_name, unique
+
+
+# Module-level cache: last listing the agent saw, keyed by process. Lets
+# `click_element(index=N)` resolve indices without re-walking the AX tree.
+_LAST_ELEMENTS: dict[str, list[_AXElement]] = {}
+_LAST_PROCESS: list[str] = []  # stack to remember most recent
+
+
+# ---------------------------------------------------------------------------
+# Tool classes
+# ---------------------------------------------------------------------------
+
+@REGISTRY.register
+class ListUIElementsTool(BaseTool):
+    name = "list_ui_elements"
+    category = "input"
+    speak_text = "Looking at the screen."
+    description = (
+        "List every clickable/interactive UI element in the frontmost macOS "
+        "app (buttons, menu items, text fields, links, rows). Returns an "
+        "indexed list. Call this BEFORE click_element to find the target. "
+        "Uses the macOS Accessibility API — the labels come from the OS, not "
+        "from screenshot OCR, so it's far more reliable than guessing pixels."
+    )
+    parameters = {
+        "filter": {
+            "type": "string",
+            "description": (
+                "Optional case-insensitive substring to filter labels. "
+                "E.g. 'play', 'jazz', 'search'."
+            ),
+        },
+        "max_items": {
+            "type": "integer",
+            "description": "Cap to N rows (default 80).",
+        },
+    }
+    guidance = (
+        "## Computer-use workflow\n"
+        "When the user asks you to interact with a Mac app's UI:\n"
+        "1. Call list_ui_elements (optionally with filter='word') to discover targets.\n"
+        "2. Call click_element(index=N) — N is the [N] from list_ui_elements.\n"
+        "3. Verify with take_screenshot if the action's effect isn't obvious.\n"
+        "Use click_at(x, y) only when AX listing is empty (Electron/canvas apps).\n"
+        "Use type_text after focusing a text field; use press_key for shortcuts.\n"
+        "\n"
+        "## Safety gate\n"
+        "If the frontmost app/window matches a sensitive pattern (passwords, "
+        "banking, system settings, etc.), click_*/type_text/press_key will "
+        "return a 'BLOCKED' message. When that happens: speak the intended "
+        "action aloud, get a verbal yes from the user, then call again with "
+        "confirm=true. Never set confirm=true without that verbal yes."
+    )
+
+    def execute(self, filter: str = "", max_items: int = 80) -> str:
+        if not _is_macos():
+            return _macos_only("list_ui_elements")
+        try:
+            proc, elements = _ax_list()
+        except subprocess.CalledProcessError as exc:
+            err = (exc.stderr or "").strip() or str(exc)
+            return (
+                f"Could not read UI elements: {err}\n"
+                "Grant Accessibility permission to your terminal/Python in "
+                "System Settings → Privacy & Security → Accessibility."
+            )
+        except Exception as exc:
+            return f"Could not read UI elements: {type(exc).__name__}: {exc}"
+
+        _LAST_ELEMENTS[proc] = elements
+        if proc in _LAST_PROCESS:
+            _LAST_PROCESS.remove(proc)
+        _LAST_PROCESS.append(proc)
+
+        if not elements:
+            return (
+                f"No interactive UI elements found in {proc}. The app may use "
+                "a non-native (Electron/canvas) UI — try take_screenshot + click_at."
+            )
+
+        # Apply optional filter for the LLM display, but the cache holds the full
+        # list so click_element indices remain stable across filtered/unfiltered calls.
+        view = elements
+        if filter:
+            f = filter.lower()
+            view = [e for e in elements if f in e.label.lower() or f in e.role.lower()]
+            if not view:
+                return f"No elements in {proc} match filter {filter!r}. Try a broader term."
+
+        truncated = False
+        if len(view) > max_items:
+            view = view[:max_items]
+            truncated = True
+
+        # Indices are into the full (unfiltered) list so click_element is stable.
+        idx_lookup = {id(e): i for i, e in enumerate(elements)}
+        lines = [f"{proc}: {len(elements)} interactive elements"]
+        if filter:
+            lines[0] += f" ({len(view)} match filter {filter!r})"
+        for e in view:
+            lines.append(e.short(idx_lookup[id(e)]))
+        if truncated:
+            lines.append(f"... (truncated to {max_items}; refine with filter=)")
+        return "\n".join(lines)
+
+
+def _resolve_element(index: int) -> Optional[_AXElement]:
+    """Look up an element by index in the most recently listed process."""
+    if not _LAST_PROCESS:
+        return None
+    proc = _LAST_PROCESS[-1]
+    elems = _LAST_ELEMENTS.get(proc, [])
+    if 0 <= index < len(elems):
+        return elems[index]
+    return None
+
+
+@REGISTRY.register
+class ClickElementTool(BaseTool):
+    name = "click_element"
+    category = "input"
+    speak_text = "Clicking."
+    description = (
+        "Click a UI element by its index from the most recent list_ui_elements "
+        "call. The most reliable way to interact with native macOS apps."
+    )
+    parameters = {
+        "index": {
+            "type": "integer",
+            "description": "Element index from list_ui_elements (the [N] prefix).",
+        },
+        "double": {
+            "type": "boolean",
+            "description": "Double-click instead of single. Default false.",
+        },
+        "confirm": {
+            "type": "boolean",
+            "description": (
+                "Required true to override the sensitive-app safety gate. "
+                "Only set after the user has verbally confirmed."
+            ),
+        },
+    }
+    required = ["index"]
+
+    def execute(self, index: int, double: bool = False, confirm: bool = False) -> str:
+        if not _is_macos():
+            return _macos_only("click_element")
+        gate = _refuse_if_sensitive(f"click element [{index}]", confirm)
+        if gate:
+            return gate
+        elem = _resolve_element(index)
+        if elem is None:
+            return (
+                f"No element with index {index}. Call list_ui_elements first, "
+                "or the index is out of range."
+            )
+        try:
+            pg = _import_pyautogui()
+        except ImportError as exc:
+            return str(exc)
+        x, y = elem.center()
+        try:
+            if double:
+                pg.doubleClick(x, y)
+            else:
+                pg.click(x, y)
+        except Exception as exc:
+            return f"Click failed: {type(exc).__name__}: {exc}"
+        label = elem.label or f"{elem.role.replace('AX', '')} at ({x},{y})"
+        return f"{'Double-clicked' if double else 'Clicked'} [{index}] {label}"
+
+
+@REGISTRY.register
+class ClickAtTool(BaseTool):
+    name = "click_at"
+    category = "input"
+    speak_text = "Clicking."
+    description = (
+        "Click at absolute screen coordinates (in pixels). Fallback when "
+        "list_ui_elements doesn't expose the target — typically Electron, "
+        "canvas, or game UIs. Take a screenshot first to find coordinates."
+    )
+    parameters = {
+        "x": {"type": "integer", "description": "X pixel (0 = left)."},
+        "y": {"type": "integer", "description": "Y pixel (0 = top)."},
+        "double": {
+            "type": "boolean",
+            "description": "Double-click. Default false.",
+        },
+        "button": {
+            "type": "string",
+            "description": "'left', 'right', or 'middle'. Default 'left'.",
+        },
+        "confirm": {
+            "type": "boolean",
+            "description": "Override the sensitive-app safety gate after verbal confirmation.",
+        },
+    }
+    required = ["x", "y"]
+
+    def execute(self, x: int, y: int, double: bool = False, button: str = "left", confirm: bool = False) -> str:
+        if not _is_macos():
+            return _macos_only("click_at")
+        gate = _refuse_if_sensitive(f"click at ({x},{y})", confirm)
+        if gate:
+            return gate
+        try:
+            pg = _import_pyautogui()
+        except ImportError as exc:
+            return str(exc)
+        try:
+            if double:
+                pg.doubleClick(x, y, button=button)
+            else:
+                pg.click(x, y, button=button)
+        except Exception as exc:
+            return f"Click failed: {type(exc).__name__}: {exc}"
+        return f"{'Double-clicked' if double else 'Clicked'} ({x},{y}) [{button}]"
+
+
+@REGISTRY.register
+class TypeTextTool(BaseTool):
+    name = "type_text"
+    category = "input"
+    speak_text = "Typing."
+    description = (
+        "Type a string into the focused text field. Click the field first "
+        "(via click_element or click_at) to focus it. Mimics human typing "
+        "speed to avoid tripping anti-bot keystroke detection."
+    )
+    parameters = {
+        "text": {"type": "string", "description": "The text to type."},
+        "interval": {
+            "type": "number",
+            "description": "Per-character delay in seconds. Default 0.02.",
+        },
+        "confirm": {
+            "type": "boolean",
+            "description": "Override the sensitive-app safety gate after verbal confirmation.",
+        },
+    }
+    required = ["text"]
+
+    def execute(self, text: str, interval: float = 0.02, confirm: bool = False) -> str:
+        if not _is_macos():
+            return _macos_only("type_text")
+        preview = text if len(text) <= 30 else text[:27] + "..."
+        gate = _refuse_if_sensitive(f"type {preview!r}", confirm)
+        if gate:
+            return gate
+        try:
+            pg = _import_pyautogui()
+        except ImportError as exc:
+            return str(exc)
+        try:
+            pg.typewrite(text, interval=interval)
+        except Exception as exc:
+            # pyautogui.typewrite can't handle non-ASCII — fall back to AppleScript.
+            try:
+                escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+                _osascript(
+                    f'tell application "System Events" to keystroke "{escaped}"',
+                    timeout=10.0,
+                )
+            except Exception as exc2:
+                return f"Type failed: {type(exc).__name__}: {exc} (fallback: {exc2})"
+        return f"Typed {len(text)} character{'s' if len(text) != 1 else ''}."
+
+
+@REGISTRY.register
+class PressKeyTool(BaseTool):
+    name = "press_key"
+    category = "input"
+    speak_text = "Pressing."
+    description = (
+        "Press a key or key combo. Examples: 'enter', 'escape', 'tab', "
+        "'cmd+f', 'cmd+shift+t', 'space', 'down'. Use for shortcuts and "
+        "navigation that text input can't express."
+    )
+    parameters = {
+        "keys": {
+            "type": "string",
+            "description": "Key or '+' joined combo, e.g. 'cmd+f' or 'enter'.",
+        },
+        "confirm": {
+            "type": "boolean",
+            "description": "Override the sensitive-app safety gate after verbal confirmation.",
+        },
+    }
+    required = ["keys"]
+
+    def execute(self, keys: str, confirm: bool = False) -> str:
+        if not _is_macos():
+            return _macos_only("press_key")
+        gate = _refuse_if_sensitive(f"press {keys}", confirm)
+        if gate:
+            return gate
+        try:
+            pg = _import_pyautogui()
+        except ImportError as exc:
+            return str(exc)
+        parts = [k.strip().lower() for k in keys.split("+") if k.strip()]
+        if not parts:
+            return "press_key: empty key string."
+        try:
+            if len(parts) == 1:
+                pg.press(parts[0])
+            else:
+                pg.hotkey(*parts)
+        except Exception as exc:
+            return f"Key press failed: {type(exc).__name__}: {exc}"
+        return f"Pressed {keys}."
+
+
+@REGISTRY.register
+class ScrollTool(BaseTool):
+    name = "scroll"
+    category = "input"
+    description = (
+        "Scroll the mouse wheel at the cursor or at a given coordinate. "
+        "Positive = up, negative = down. Use to reveal off-screen elements "
+        "before listing or clicking them."
+    )
+    parameters = {
+        "amount": {
+            "type": "integer",
+            "description": "Scroll units. + up, - down. Typical: 5 to 20.",
+        },
+        "x": {"type": "integer", "description": "Optional X to scroll at."},
+        "y": {"type": "integer", "description": "Optional Y to scroll at."},
+        "confirm": {
+            "type": "boolean",
+            "description": "Override the sensitive-app safety gate after verbal confirmation.",
+        },
+    }
+    required = ["amount"]
+
+    def execute(self, amount: int, x: Optional[int] = None, y: Optional[int] = None, confirm: bool = False) -> str:
+        if not _is_macos():
+            return _macos_only("scroll")
+        gate = _refuse_if_sensitive(f"scroll {amount:+d}", confirm)
+        if gate:
+            return gate
+        try:
+            pg = _import_pyautogui()
+        except ImportError as exc:
+            return str(exc)
+        try:
+            if x is not None and y is not None:
+                pg.scroll(amount, x=x, y=y)
+            else:
+                pg.scroll(amount)
+        except Exception as exc:
+            return f"Scroll failed: {type(exc).__name__}: {exc}"
+        # Give the UI a beat to settle before the next AX listing.
+        time.sleep(0.15)
+        return f"Scrolled {amount:+d}{f' at ({x},{y})' if x is not None else ''}."
+
+
+@REGISTRY.register
+class MouseMoveTool(BaseTool):
+    name = "mouse_move"
+    category = "input"
+    description = (
+        "Move the mouse cursor without clicking. Useful to dismiss tooltips "
+        "or hover-reveal a menu before listing elements."
+    )
+    parameters = {
+        "x": {"type": "integer"},
+        "y": {"type": "integer"},
+        "duration": {
+            "type": "number",
+            "description": "Seconds to take. Default 0.1 (snappy).",
+        },
+    }
+    required = ["x", "y"]
+
+    def execute(self, x: int, y: int, duration: float = 0.1) -> str:
+        if not _is_macos():
+            return _macos_only("mouse_move")
+        try:
+            pg = _import_pyautogui()
+        except ImportError as exc:
+            return str(exc)
+        try:
+            pg.moveTo(x, y, duration=duration)
+        except Exception as exc:
+            return f"Move failed: {type(exc).__name__}: {exc}"
+        return f"Moved to ({x},{y})."
