@@ -635,6 +635,131 @@ def patch_file(path: str, old_str: str, new_str: str) -> str:
     return f"Patched {p}.{syntax_msg}\n{diff_text}" if diff_text else f"Patched {p} (no textual diff)."
 
 
+def make_directory(path: str, parents: bool = True) -> str:
+    """Create a directory. `parents=True` mirrors `mkdir -p`."""
+    p = Path(path).expanduser()
+    try:
+        p.mkdir(parents=parents, exist_ok=True)
+    except Exception as exc:
+        return f"Could not create {p}: {exc}"
+    return f"Directory ready: {p}"
+
+
+def move_path(src: str, dst: str) -> str:
+    """Move or rename a file or directory."""
+    import shutil
+    s = Path(src).expanduser()
+    d = Path(dst).expanduser()
+    if not s.exists():
+        return f"Source not found: {s}"
+    try:
+        d.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(s), str(d))
+    except Exception as exc:
+        return f"Move failed: {exc}"
+    return f"Moved {s} → {d}"
+
+
+def copy_path(src: str, dst: str) -> str:
+    """Copy a file or directory (recursive for dirs)."""
+    import shutil
+    s = Path(src).expanduser()
+    d = Path(dst).expanduser()
+    if not s.exists():
+        return f"Source not found: {s}"
+    try:
+        d.parent.mkdir(parents=True, exist_ok=True)
+        if s.is_dir():
+            shutil.copytree(s, d, dirs_exist_ok=True)
+        else:
+            shutil.copy2(s, d)
+    except Exception as exc:
+        return f"Copy failed: {exc}"
+    return f"Copied {s} → {d}"
+
+
+def delete_path(path: str, recursive: bool = False) -> str:
+    """Delete a file or (with recursive=True) a directory tree."""
+    import shutil
+    p = Path(path).expanduser()
+    if not p.exists():
+        return f"Path not found: {p}"
+    # Refuse to nuke obviously catastrophic targets even when asked.
+    resolved = p.resolve()
+    if resolved == Path.home() or str(resolved) in ("/", str(Path.home().parent)):
+        return f"Refusing to delete {resolved}: too dangerous."
+    try:
+        if p.is_dir():
+            if not recursive:
+                return f"{p} is a directory; pass recursive=true to delete it."
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+    except Exception as exc:
+        return f"Delete failed: {exc}"
+    return f"Deleted {p}"
+
+
+def append_to_file(path: str, content: str) -> str:
+    """Append text to a file. Creates the file (and parent dirs) if missing."""
+    p = Path(path).expanduser()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "a") as fh:
+            fh.write(content)
+    except Exception as exc:
+        return f"Append failed: {exc}"
+    return f"Appended {len(content)} bytes to {p}."
+
+
+def file_info(path: str) -> dict:
+    """Return existence, size, mtime, and type of a path."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        return {"exists": False, "path": str(p)}
+    st = p.stat()
+    return {
+        "exists": True,
+        "path": str(p),
+        "is_dir": p.is_dir(),
+        "is_file": p.is_file(),
+        "size": st.st_size,
+        "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+    }
+
+
+def run_terminal_command(command: str, timeout: int = 30, cwd: str = "") -> dict:
+    """Run a shell command via /bin/bash -lc. Captures stdout/stderr.
+
+    Ephemeral: each call is a fresh subprocess (no persistent cwd between
+    calls — pass `cwd` if you need to run from a specific directory).
+    """
+    if not command.strip():
+        return {"result": "Empty command.", "exit_code": -1}
+    try:
+        proc = subprocess.run(
+            ["/bin/bash", "-lc", command],
+            capture_output=True, text=True,
+            timeout=max(1, int(timeout)),
+            cwd=cwd or None,
+        )
+    except subprocess.TimeoutExpired:
+        return {"result": f"Command timed out after {timeout}s.", "exit_code": 124}
+    except Exception as exc:
+        return {"result": f"Command failed to launch: {exc}", "exit_code": -1}
+
+    out = (proc.stdout or "").rstrip()
+    err = (proc.stderr or "").rstrip()
+    parts = []
+    if out:
+        parts.append(out if len(out) <= 1500 else out[:1500] + f"\n...(truncated, {len(out) - 1500} more chars)")
+    if err:
+        parts.append(f"[stderr]\n{err if len(err) <= 800 else err[:800] + '...(truncated)'}")
+    if not parts:
+        parts.append(f"(no output, exit={proc.returncode})")
+    return {"result": "\n".join(parts), "exit_code": proc.returncode}
+
+
 def search_files(target: str, query: str, path: str = ".", max_results: int = 50) -> str:
     """Search file contents or filenames. Uses ripgrep when available."""
     p = Path(path).expanduser()
@@ -672,8 +797,15 @@ def search_files(target: str, query: str, path: str = ".", max_results: int = 50
     return f"Unknown target {target!r}. Use 'content' or 'filename'."
 
 
-def list_folder(path: str, recursive: bool = False, max_items: int = 50) -> str:
-    """List the contents of a folder. `recursive` walks subfolders."""
+_LIST_FOLDER_HARD_CAP = 30
+
+
+def list_folder(path: str, recursive: bool = False, max_items: int = 25) -> str:
+    """List the contents of a folder. `recursive` walks subfolders.
+
+    Hard-capped at `_LIST_FOLDER_HARD_CAP` items regardless of caller request —
+    voice responses go off the rails past ~30 names anyway.
+    """
     p = Path(path).expanduser()
     if not p.exists():
         return f"Folder not found: {p}"
@@ -688,15 +820,16 @@ def list_folder(path: str, recursive: bool = False, max_items: int = 50) -> str:
     # Folders first, then files, alphabetically.
     items.sort(key=lambda i: (not i.is_dir(), i.name.lower()))
     total = len(items)
-    shown = items[:max_items]
+    cap = min(max(1, max_items), _LIST_FOLDER_HARD_CAP)
+    shown = items[:cap]
 
     lines = [f"Folder {p} contains {total} item{'s' if total != 1 else ''}:"]
     for item in shown:
         kind = "folder" if item.is_dir() else "file"
         rel = item.relative_to(p) if recursive else Path(item.name)
         lines.append(f"  {kind}: {rel}")
-    if total > max_items:
-        lines.append(f"  ...and {total - max_items} more.")
+    if total > cap:
+        lines.append(f"  ...and {total - cap} more.")
     return "\n".join(lines)
 
 
@@ -1211,7 +1344,9 @@ class ReadFocusedInputTool(BaseTool):
     category = "input"
     description = (
         "Read the value of the focused text field in the frontmost app (macOS only). "
-        "Use when the user says 'what am I typing' or 'look at this input'."
+        "Use when the user says 'what am I typing' or 'look at this input'. "
+        "Often fails on Electron-based apps (VS Code, Slack, Gemini, etc.) — "
+        "prefer `read_selected_text` there."
     )
 
     def execute(self) -> str:
@@ -1279,6 +1414,125 @@ class PatchFileTool(BaseTool):
 
 
 @REGISTRY.register
+class MakeDirectoryTool(BaseTool):
+    name = "make_directory"
+    category = "files"
+    speak_text = "Creating that folder."
+    description = "Create a directory (mkdir -p semantics by default)."
+    parameters = {
+        "path": {"type": "string", "description": "Directory path to create."},
+        "parents": {"type": "boolean", "description": "Create missing parents. Default true."},
+    }
+    required = ["path"]
+
+    def execute(self, path: str, parents: bool = True) -> str:
+        return make_directory(path, parents)
+
+
+@REGISTRY.register
+class MovePathTool(BaseTool):
+    name = "move_path"
+    category = "files"
+    speak_text = "Moving that."
+    description = "Move or rename a file or directory."
+    parameters = {
+        "src": {"type": "string", "description": "Source path."},
+        "dst": {"type": "string", "description": "Destination path."},
+    }
+    required = ["src", "dst"]
+
+    def execute(self, src: str, dst: str) -> str:
+        return move_path(src, dst)
+
+
+@REGISTRY.register
+class CopyPathTool(BaseTool):
+    name = "copy_path"
+    category = "files"
+    speak_text = "Copying that."
+    description = "Copy a file or directory (directories copied recursively)."
+    parameters = {
+        "src": {"type": "string", "description": "Source path."},
+        "dst": {"type": "string", "description": "Destination path."},
+    }
+    required = ["src", "dst"]
+
+    def execute(self, src: str, dst: str) -> str:
+        return copy_path(src, dst)
+
+
+@REGISTRY.register
+class DeletePathTool(BaseTool):
+    name = "delete_path"
+    category = "files"
+    speak_text = "Deleting that."
+    description = (
+        "Delete a file. For directories, pass recursive=true. "
+        "Refuses to delete the home directory or root."
+    )
+    parameters = {
+        "path": {"type": "string", "description": "Path to delete."},
+        "recursive": {"type": "boolean", "description": "Required for directories. Default false."},
+    }
+    required = ["path"]
+
+    def execute(self, path: str, recursive: bool = False) -> str:
+        return delete_path(path, recursive)
+
+
+@REGISTRY.register
+class AppendToFileTool(BaseTool):
+    name = "append_to_file"
+    category = "files"
+    speak_text = "Appending."
+    description = "Append text to a file. Creates the file (and parent dirs) if missing."
+    parameters = {
+        "path": {"type": "string", "description": "File path."},
+        "content": {"type": "string", "description": "Text to append."},
+    }
+    required = ["path", "content"]
+
+    def execute(self, path: str, content: str) -> str:
+        return append_to_file(path, content)
+
+
+@REGISTRY.register
+class FileInfoTool(BaseTool):
+    name = "file_info"
+    category = "files"
+    description = "Return existence, size, mtime, and type (file/dir) for a path."
+    parameters = {
+        "path": {"type": "string", "description": "Path to inspect."},
+    }
+    required = ["path"]
+
+    def execute(self, path: str) -> dict:
+        return file_info(path)
+
+
+@REGISTRY.register
+class RunTerminalCommandTool(BaseTool):
+    name = "run_terminal_command"
+    category = "system"
+    speak_text = "Running that."
+    description = (
+        "Execute a shell command via bash and return stdout/stderr/exit code. "
+        "Each call is a fresh subprocess — pass `cwd` to run from a specific "
+        "directory. Use for git, build tools, one-liners. Output is truncated "
+        "to keep voice responses tractable."
+    )
+    parameters = {
+        "command": {"type": "string", "description": "The bash command to execute."},
+        "timeout": {"type": "integer", "description": "Max seconds to wait. Default 30."},
+        "cwd": {"type": "string", "description": "Working directory. Optional."},
+    }
+    required = ["command"]
+
+    def execute(self, command: str, timeout: int = 30, cwd: str = "") -> dict:
+        return run_terminal_command(command, timeout, cwd)
+
+
+@REGISTRY.register
 class SearchFilesTool(BaseTool):
     name = "search_files"
     category = "files"
@@ -1314,11 +1568,11 @@ class ListFolderTool(BaseTool):
     parameters = {
         "path": {"type": "string", "description": "Absolute or ~-prefixed folder path."},
         "recursive": {"type": "boolean", "description": "Walk subfolders. Default false."},
-        "max_items": {"type": "integer", "description": "Cap items shown. Default 50."},
+        "max_items": {"type": "integer", "description": "Cap items shown. Default 25."},
     }
     required = ["path"]
 
-    def execute(self, path: str, recursive: bool = False, max_items: int = 50) -> str:
+    def execute(self, path: str, recursive: bool = False, max_items: int = 25) -> str:
         return list_folder(path, recursive, max_items)
 
 

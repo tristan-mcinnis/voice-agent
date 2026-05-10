@@ -8,6 +8,8 @@ Event names use kebab-case so they're stable as future identifiers:
 
     session-started
     user-spoke              {text}
+    llm-response-started    (LLM began generating a reply)
+    llm-response-ended      (LLM finished generating; no reply implies a hang)
     bot-spoke               {text}
     tool-called             {name, args}
     tool-result             {name, result}
@@ -39,6 +41,8 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
     TextFrame,
     TranscriptionFrame,
     UserStoppedSpeakingFrame,
@@ -149,7 +153,11 @@ class SessionLogProcessor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, BotStartedSpeakingFrame):
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self._log.event("llm-response-started")
+        elif isinstance(frame, LLMFullResponseEndFrame):
+            self._log.event("llm-response-ended")
+        elif isinstance(frame, BotStartedSpeakingFrame):
             self._bot_chunks.clear()
         elif isinstance(frame, TranscriptionFrame):
             text = (frame.text or "").strip()

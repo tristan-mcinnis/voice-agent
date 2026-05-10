@@ -65,7 +65,11 @@ async def main():
     # we must place a VADProcessor in the pipeline to get those frames.
     vad = VADProcessor(vad_analyzer=SileroVADAnalyzer())
 
-    log_proc = SessionLogProcessor(session_log)
+    # Two log processors: pre-LLM sees TranscriptionFrame (user-spoke);
+    # post-LLM sees LLMFullResponseStart/EndFrame + bot TextFrame (bot-spoke,
+    # llm-response-started/ended). They share one SessionLog file.
+    log_proc_pre = SessionLogProcessor(session_log)
+    log_proc_post = SessionLogProcessor(session_log)
     wake_gate = WakeWordGate(components.config.wake_word)
     echo_suppressor = EchoSuppressor(holdoff_seconds=1.0)
 
@@ -76,9 +80,10 @@ async def main():
             components.stt,
             echo_suppressor,
             wake_gate,
-            log_proc,
+            log_proc_pre,
             components.context_aggregator.user(),
             components.llm,
+            log_proc_post,
             components.tts,
             transport.output(),
             components.context_aggregator.assistant(),

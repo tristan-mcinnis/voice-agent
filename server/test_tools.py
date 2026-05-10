@@ -81,7 +81,7 @@ def main() -> int:
     # --- File system --------------------------------------------------------
     here = Path(__file__).resolve().parent
     run("read_file (this script)", tools.read_file, str(__file__))
-    run("read_file (small max_bytes)", tools.read_file, str(__file__), 200)
+    run("read_file (offset/limit)", tools.read_file, str(__file__), 1, 5)
     run("read_file (nonexistent)", tools.read_file, "/no/such/path/__voice_bot_missing__")
     run("read_file (directory)", tools.read_file, str(here))
     run("list_folder (server dir)", tools.list_folder, str(here))
@@ -89,6 +89,43 @@ def main() -> int:
         run("list_folder (recursive assets)", tools.list_folder, str(here / "assets"), True)
     run("list_folder (nonexistent)", tools.list_folder, "/no/such/folder/__missing__")
     run("read_finder_selection", tools.read_finder_selection)
+
+    # --- File mutation (sandbox in /tmp) -------------------------------------
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="voice-bot-test-") as sandbox:
+        sb = Path(sandbox)
+        f1 = sb / "sub" / "hello.py"
+        run("write_file (creates parents)", tools.write_file, str(f1), "def hi():\n    return 1\n")
+        run("append_to_file", tools.append_to_file, str(f1), "# trailing\n")
+        run("file_info (existing)", tools.file_info, str(f1))
+        run("file_info (missing)", tools.file_info, "/no/such/file")
+        run("patch (fuzzy + diff + syntax)", tools.patch_file, str(f1), "return 1", "return 42")
+        run("patch (non-unique fail)", tools.patch_file, str(f1), "def", "DEF")
+        run("make_directory", tools.make_directory, str(sb / "newdir/a/b"))
+        run("copy_path (file)", tools.copy_path, str(f1), str(sb / "copy.py"))
+        run("copy_path (dir recursive)", tools.copy_path, str(sb / "newdir"), str(sb / "newdir-copy"))
+        run("move_path", tools.move_path, str(f1), str(sb / "moved.py"))
+        run("delete_path (file)", tools.delete_path, str(sb / "moved.py"))
+        run("delete_path (dir refuses without recursive)", tools.delete_path, str(sb / "newdir"))
+        run("delete_path (dir recursive)", tools.delete_path, str(sb / "newdir"), True)
+        run("delete_path (refuses $HOME)", tools.delete_path, str(Path.home()))
+        run("search_files (content)", tools.search_files, "content", "return 42", str(sb))
+        run("search_files (filename)", tools.search_files, "filename", "*.py", str(sb))
+
+        # Hard cap on list_folder regardless of LLM-supplied max_items
+        big = sb / "many"; big.mkdir()
+        for i in range(60):
+            (big / f"f{i:02d}.txt").touch()
+        run("list_folder (hard cap 30 vs requested 50)", tools.list_folder, str(big), False, 50)
+
+    # --- run_terminal_command -----------------------------------------------
+    run("run_terminal_command (basic)", tools.run_terminal_command, "echo hello && pwd", 5, "/tmp")
+    run("run_terminal_command (timeout)", tools.run_terminal_command, "sleep 5", 1)
+    run("run_terminal_command (stdout cap)",
+        tools.run_terminal_command,
+        "for i in $(seq 1 500); do echo line-$i-padding; done", 10)
+    run("run_terminal_command (stderr captured)",
+        tools.run_terminal_command, "ls /no/such/path 2>&1 1>/dev/null; echo done >&2", 5)
 
     # --- Browser ------------------------------------------------------------
     run("read_browser_url", tools.read_browser_url)
@@ -150,7 +187,7 @@ def main() -> int:
     print("\nRegistry execute() smoke calls:")
     smoke = [
         ("read_clipboard", {}),
-        ("read_file", {"path": __file__, "max_bytes": 200}),
+        ("read_file", {"path": __file__, "offset": 1, "limit": 5}),
         ("get_current_weather", {"location": "San Francisco, CA", "format": "fahrenheit"}),
     ]
     for name, kwargs in smoke:
