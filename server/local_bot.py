@@ -66,6 +66,7 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
 )
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
+from config import load_config
 from connection_rendezvous import ConnectionRendezvous
 from processors import EchoSuppressor, SessionLog, SessionLogProcessor, WakeWordGate
 from hotkey_interrupt import install_interrupt_hotkey
@@ -82,7 +83,7 @@ logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO"))
 # ---------------------------------------------------------------------------
 
 def _local_user_aggregator_params(
-    *, user_speech_timeout: float = 0.6
+    *, user_speech_timeout: float
 ) -> LLMUserAggregatorParams:
     """Mute + turn strategies for mic-and-speakers transports.
 
@@ -159,6 +160,7 @@ def _install_local_audio_lifecycle(
 # ---------------------------------------------------------------------------
 
 async def main():
+    cfg = load_config()
     session_log = SessionLog.for_now()
     logger.info(f"Session log: {session_log.path}")
 
@@ -171,7 +173,9 @@ async def main():
 
     components = build_components(
         initial_user_message="Hello!",
-        user_aggregator_params=_local_user_aggregator_params(),
+        user_aggregator_params=_local_user_aggregator_params(
+            user_speech_timeout=cfg.turn.user_speech_timeout,
+        ),
         session_log=session_log,
     )
 
@@ -180,7 +184,9 @@ async def main():
     log_proc_pre = SessionLogProcessor(session_log)
     log_proc_post = SessionLogProcessor(session_log)
     wake_gate = WakeWordGate(components.config.wake_word)
-    echo_suppressor = EchoSuppressor(holdoff_seconds=1.0)
+    echo_suppressor = EchoSuppressor(
+        holdoff_seconds=cfg.turn.echo_holdoff_seconds
+    )
 
     pipeline = Pipeline(
         [
@@ -206,7 +212,7 @@ async def main():
         tts=components.tts,
         context_aggregator=components.context_aggregator,
     )
-    install_interrupt_hotkey(task)
+    install_interrupt_hotkey(task, hotkey=cfg.hotkey.interrupt)
 
     runner = PipelineRunner()
     try:

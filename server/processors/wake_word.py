@@ -24,6 +24,8 @@ import time
 from loguru import logger
 
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     Frame,
     InterimTranscriptionFrame,
     TranscriptionFrame,
@@ -93,6 +95,10 @@ class WakeWordGate(FrameProcessor):
         self._awake = config.start_awake
         self._last_activity = time.monotonic()
         self._idle_task: asyncio.Task | None = None
+        # Pause the idle watchdog while the bot is speaking — otherwise a long
+        # answer (LLM + tool calls + TTS playback) can outlast the timeout and
+        # the gate sleeps mid-response.
+        self._bot_speaking = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -104,6 +110,13 @@ class WakeWordGate(FrameProcessor):
         if isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
             await self._handle_transcript(frame)
             return
+
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+            self._last_activity = time.monotonic()
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+            self._last_activity = time.monotonic()
 
         await self.push_frame(frame, direction)
 
@@ -166,6 +179,10 @@ class WakeWordGate(FrameProcessor):
     async def _idle_watchdog(self):
         timeout = self._cfg.idle_timeout_seconds
         while self._awake:
+            if self._bot_speaking:
+                # Don't count time while the bot holds the floor.
+                await asyncio.sleep(1.0)
+                continue
             elapsed = time.monotonic() - self._last_activity
             remaining = timeout - elapsed
             if remaining <= 0:

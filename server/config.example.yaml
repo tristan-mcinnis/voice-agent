@@ -93,10 +93,34 @@ wake_word:
   enabled: true
   phrase: "Hey Ava"
   sleep_phrase: "Go to sleep"
-  idle_timeout_seconds: 30
+  # Time of silence after the bot finishes speaking before going to sleep.
+  # The timer is paused while the bot is talking, so this counts only quiet
+  # time on the user's side.
+  idle_timeout_seconds: 60
   ack_text: "Ready."
   sleep_ack_text: "Sleeping."
   start_awake: true
+
+# Conversation pacing — the dials you reach for when the bot feels too eager
+# (cuts you off) or too sluggish (long awkward pauses).
+turn:
+  # How long the bot waits after you stop talking before deciding your turn
+  # is over and sending to the LLM. Lower = snappier; too low = bot interrupts
+  # your hesitation pauses.
+  user_speech_timeout: 0.6
+  # How long the EchoSuppressor keeps dropping STT frames after the bot stops
+  # speaking. Compensates for speaker-bleed-into-mic without hardware AEC.
+  # Raise if the bot keeps "hearing itself"; lower if it ignores you for too
+  # long after it finishes a sentence.
+  echo_holdoff_seconds: 1.0
+
+# Global desktop hotkeys. Uses pynput combo syntax. Requires macOS
+# Accessibility permission on first run.
+hotkey:
+  # Press anywhere to interrupt the bot mid-sentence. Examples:
+  #   "<cmd>+<shift>+i"   ⌘⇧I (default)
+  #   "<ctrl>+<alt>+i"    ⌃⌥I
+  interrupt: "<cmd>+<shift>+i"
 
 # System prompt the LLM sees at conversation start. Swap freely.
 system_prompt: |

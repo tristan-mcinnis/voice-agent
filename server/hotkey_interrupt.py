@@ -10,8 +10,9 @@ The first press in a fresh terminal will prompt for macOS Accessibility
 permission (System Settings → Privacy & Security → Accessibility). pynput
 silently does nothing until that's granted.
 
-Default hotkey: ⌘⇧I. Override with `HOTKEY_INTERRUPT` env var using pynput
-syntax, e.g. `HOTKEY_INTERRUPT='<ctrl>+<alt>+i'`.
+Default hotkey: ⌘⇧I. Override in `config.yaml` under `hotkey.interrupt`
+(pynput syntax, e.g. `<ctrl>+<alt>+i`). The `HOTKEY_INTERRUPT` env var still
+works as a fallback when no value is passed in.
 """
 
 from __future__ import annotations

@@ -25,6 +25,16 @@ server/tests/test_tts.wav
 .omc/
 server/.omc/
 
-# Agent data (SOUL.md, memories, skills)
-.voice-agent/
-server/.voice-agent/
+# Agent data (SOUL.md, memories, skills) — content is private,
+# but commit the .example templates so the cognitive-stack scaffolding is discoverable.
+# Pattern: ignore everything inside .voice-agent/, then re-include parent dirs and .example files.
+.voice-agent/*
+.voice-agent/**/*
+!.voice-agent/memories/
+!.voice-agent/*.example
+!.voice-agent/memories/*.example
+server/.voice-agent/*
+server/.voice-agent/**/*
+!server/.voice-agent/memories/
+!server/.voice-agent/*.example
+!server/.voice-agent/memories/*.example

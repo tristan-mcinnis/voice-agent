@@ -1,0 +1,15 @@
+# MEMORY — Project Facts
+
+Durable facts about *the work and the world* the agent operates in:
+ongoing projects, key people, decisions, recurring topics. Loaded once per
+session and wrapped in `<persistent_memory>` tags. Soft cap ~2,200 chars.
+
+Maintained by the agent via the `memory` tool. Edit by hand freely.
+
+Format: one fact per `§`-delimited block.
+
+---
+
+§ Working on: <project name> — <one-line description>
+§ Stack: <e.g. Python, Pipecat, DeepSeek, Soniox>
+§ Open question: <what's currently undecided>

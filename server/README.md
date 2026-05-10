@@ -130,6 +130,29 @@ class MyTool(BaseTool):
 
 The tool is automatically wired to the LLM and appears in the capability summary (the `{tool_capabilities}` placeholder in the system prompt). To make the tool callable as `tools.my_tool(...)` for backward compat, add a `my_tool = _compat("my_tool")` line in `tools/__init__.py`.
 
+## Cognitive-stack memory files
+
+The agent's frozen system prompt is assembled once per session by `agent/prompt_builder.py` from layered files in `.voice-agent/` (gitignored, project-root):
+
+```
+.voice-agent/
+  SOUL.md              # agent identity (falls back to config.system_prompt if missing)
+  memories/
+    USER.md            # user preferences (~1,375 chars soft cap)
+    MEMORY.md          # project facts (~2,200 chars soft cap)
+  skills/              # one dir per skill, each with a SKILL.md
+```
+
+The repo ships `.example` templates for each. **First-time setup** — copy them and edit:
+
+```bash
+cp .voice-agent/SOUL.md.example                .voice-agent/SOUL.md
+cp .voice-agent/memories/USER.md.example       .voice-agent/memories/USER.md
+cp .voice-agent/memories/MEMORY.md.example     .voice-agent/memories/MEMORY.md
+```
+
+The agent maintains USER.md and MEMORY.md at runtime via the `memory` tool (`add` / `replace` / `list`), but you can edit them directly any time. Snapshots are loaded once per session — mid-session edits don't re-inject until the next run, which keeps provider-side prompt caches warm.
+
 ## Session logs
 
 Per-session JSONL logs are written to `logs/session-<ts>.jsonl` as the session runs. Vision captures are saved to `logs/captures/` as timestamped JPEGs, with `image_path` recorded in the tool-result event. Override the directory with `VOICE_BOT_LOG_DIR`.

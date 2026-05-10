@@ -84,10 +84,33 @@ class WakeWordConfig:
     enabled: bool = False
     phrase: str = "hey ava"
     sleep_phrase: str = "go to sleep"
-    idle_timeout_seconds: float = 30.0
+    idle_timeout_seconds: float = 60.0
     ack_text: str = "Ready."
     sleep_ack_text: str = "Sleeping."
     start_awake: bool = True
+
+
+@dataclass(frozen=True)
+class TurnConfig:
+    """Conversation-pacing knobs.
+
+    These are the dials you reach for when the bot feels too eager (cuts
+    you off) or too sluggish (long awkward pauses).
+    """
+    # How long the bot waits after you stop talking before it decides your
+    # turn is over and sends to the LLM. Lower = snappier; too low = bot
+    # interrupts your hesitation pauses.
+    user_speech_timeout: float = 0.6
+    # How long the EchoSuppressor keeps dropping STT frames after the bot
+    # stops speaking. Compensates for speaker-bleed-into-mic without
+    # hardware AEC. Raise if the bot keeps "hearing itself".
+    echo_holdoff_seconds: float = 1.0
+
+
+@dataclass(frozen=True)
+class HotkeyConfig:
+    """Global desktop hotkeys. Uses pynput combo syntax (e.g. <cmd>+<shift>+i)."""
+    interrupt: str = "<cmd>+<shift>+i"
 
 
 @dataclass(frozen=True)
@@ -99,6 +122,8 @@ class Config:
     system_prompt: str
     wake_word: WakeWordConfig
     shortcat: ShortcatConfig
+    turn: TurnConfig
+    hotkey: HotkeyConfig
 
 
 @lru_cache(maxsize=1)
@@ -118,6 +143,12 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
     shortcat_raw = data.get("shortcat") or {}
     shortcat = ShortcatConfig(**shortcat_raw)
 
+    turn_raw = data.get("turn") or {}
+    turn = TurnConfig(**turn_raw)
+
+    hotkey_raw = data.get("hotkey") or {}
+    hotkey = HotkeyConfig(**hotkey_raw)
+
     return Config(
         llm=LLMConfig(**data["llm"]),
         stt=STTConfig(**data["stt"]),
@@ -126,6 +157,8 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
         system_prompt=data["system_prompt"].strip(),
         wake_word=wake_word,
         shortcat=shortcat,
+        turn=turn,
+        hotkey=hotkey,
     )
 
 

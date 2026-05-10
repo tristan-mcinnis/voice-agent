@@ -1,0 +1,20 @@
+# USER — Preferences and Profile
+
+Durable facts about *the person talking to the agent*: name, role, tone
+preferences, recurring contexts. Loaded once per session and wrapped in
+`<user_profile>` tags in the system prompt. Soft cap ~1,375 chars to keep
+the prompt cache warm.
+
+The agent maintains this file via the `memory` tool
+(`action="add" | "replace" | "list"`). You can also edit it by hand.
+
+Format: one fact per `§`-delimited block. Keep entries dense — no
+narrative prose.
+
+---
+
+§ Name: <your name>
+§ Pronouns: <they/she/he>
+§ Time zone: <e.g. America/Los_Angeles>
+§ Tone preference: terse, no filler, no "great question!"
+§ Don't repeat the user's question back before answering.
