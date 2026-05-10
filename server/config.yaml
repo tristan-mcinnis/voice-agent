@@ -83,6 +83,7 @@ wake_word:
   sleep_phrase: "go to sleep"
   idle_timeout_seconds: 30
   ack_text: "Ready."
+  sleep_ack_text: "Sleeping."
   start_awake: true
 
 # System prompt the LLM sees at conversation start. Swap freely.

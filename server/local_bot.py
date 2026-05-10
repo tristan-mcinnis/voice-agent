@@ -28,6 +28,7 @@ from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
 from echo_suppressor import EchoSuppressor
+from hotkey_interrupt import install_interrupt_hotkey
 from local_audio import install_local_audio_lifecycle, local_user_aggregator_params
 from session_log import SessionLog, SessionLogProcessor
 from voice_bot import build_components
@@ -91,6 +92,7 @@ async def main():
         tts=components.tts,
         context_aggregator=components.context_aggregator,
     )
+    install_interrupt_hotkey(task)
 
     runner = PipelineRunner()
     try:

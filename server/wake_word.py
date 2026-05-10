@@ -75,7 +75,7 @@ class WakeWordGate(FrameProcessor):
 
         # Awake: optionally sleep on phrase, otherwise pass through.
         if is_final and self._sleep and self._sleep in text:
-            await self._go_to_sleep()
+            await self._go_to_sleep(speak_ack=True)
             return
 
         self._last_activity = time.monotonic()
@@ -92,11 +92,15 @@ class WakeWordGate(FrameProcessor):
             )
         self._ensure_idle_task()
 
-    async def _go_to_sleep(self):
+    async def _go_to_sleep(self, *, speak_ack: bool = False):
         if not self._awake:
             return
         self._awake = False
         logger.info(f"💤 Going to sleep — say {self._cfg.phrase!r} to wake me")
+        if speak_ack and self._cfg.sleep_ack_text:
+            await self.push_frame(
+                TTSSpeakFrame(text=self._cfg.sleep_ack_text), FrameDirection.DOWNSTREAM
+            )
 
     def _ensure_idle_task(self):
         if self._cfg.idle_timeout_seconds <= 0:

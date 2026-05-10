@@ -77,6 +77,7 @@ class WakeWordConfig:
     sleep_phrase: str = "go to sleep"
     idle_timeout_seconds: float = 30.0
     ack_text: str = "Ready."
+    sleep_ack_text: str = "Sleeping."
     start_awake: bool = True
 
 

@@ -4,3 +4,4 @@ pipecat-ai[openai,silero,soniox,local]
 httpx
 pyperclip
 opencv-python
+mlx-vlm; sys_platform == "darwin" and platform_machine == "arm64"
