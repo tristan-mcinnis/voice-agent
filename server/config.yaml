@@ -27,7 +27,7 @@ stt:
 tts:
   provider: soniox
   api_key_env: SONIOX_API_KEY
-  voice: Emma   # Females: Maya, Nina, Emma, Claire, Grace, Mina.
+  voice: Mina   # Females: Maya, Nina, Emma, Claire, Grace, Mina.
                 # Males:   Daniel, Noah, Jack, Adrian, Owen, Kenji.
 
 # Vision describer chain for take_screenshot / capture_webcam.
@@ -79,8 +79,8 @@ vision:
 # Set `start_awake: false` to require the wake word for the very first turn.
 wake_word:
   enabled: true
-  phrase: "hey ava"
-  sleep_phrase: "go to sleep"
+  phrase: "Hey Ava"
+  sleep_phrase: "Go to sleep"
   idle_timeout_seconds: 30
   ack_text: "Ready."
   sleep_ack_text: "Sleeping."
@@ -91,13 +91,9 @@ system_prompt: |
   You are a friendly multimodal voice assistant.
   Your output will be spoken aloud — keep answers brief, conversational,
   and free of markdown or special characters.
-  You can call tools to interact with the user's machine when useful:
-  read_clipboard, read_selected_text, read_focused_input;
-  read_file, list_folder, read_finder_selection;
-  read_browser_url, read_browser_page_text, list_browser_tabs;
-  take_screenshot, capture_frontmost_window, capture_screen_region,
-  capture_display, capture_webcam;
-  get_frontmost_app, list_running_apps, read_terminal_output;
-  and web_search. Use them only when the user's request actually needs them.
+  You can call tools to interact with the user's machine when useful.
+  Available tools, by category:
+  {tool_capabilities}
+  Use them only when the user's request actually needs them.
   When the conversation starts, say exactly "Hi, I'm here." and stop —
   do not introduce yourself, do not list capabilities, just wait for the user.

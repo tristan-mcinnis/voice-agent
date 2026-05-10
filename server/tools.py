@@ -19,7 +19,6 @@ import os
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -891,319 +890,122 @@ def read_terminal_output(max_lines: int = 80) -> str:
 
 # ---------------------------------------------------------------------------
 # Tool registry
+#
+# Each tool is a `BaseTool` subclass declaring its name, description, JSON-
+# schema parameters, optional spoken filler, and an `execute()` implementation.
+# Subclasses register themselves on import via the `@REGISTRY.register`
+# decorator. `REGISTRY.register_handlers(llm, session_log)` wires every tool
+# onto the LLM and returns the FunctionSchemas to wrap in a ToolsSchema.
+#
+# Adding a tool = write a class with the decorator. Nothing else.
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class Tool:
-    """Declarative binding of name+schema+function+spoken filler."""
 
-    schema: FunctionSchema
-    fn: Callable[..., Any]
+class BaseTool:
+    """Declarative tool: name + description + JSON-schema params + execute().
+
+    Subclasses override `execute(**kwargs)`; the engine takes care of
+    threading, error handling, spoken filler, and session logging.
+    """
+
+    name: str = ""
+    description: str = ""
+    parameters: dict[str, dict[str, Any]] = {}
+    required: list[str] = []
     speak_text: Optional[str] = None
+    # Coarse grouping for the auto-generated capability summary in the system
+    # prompt. Pick one of: input, files, browser, vision, system, web, demo.
+    category: str = "misc"
+
+    def execute(self, **kwargs: Any) -> Any:
+        raise NotImplementedError
+
+    @classmethod
+    def to_schema(cls) -> FunctionSchema:
+        return FunctionSchema(
+            name=cls.name,
+            description=cls.description,
+            properties=cls.parameters,
+            required=cls.required,
+        )
 
 
-TOOLS: list[Tool] = [
-    Tool(
-        schema=FunctionSchema(
-            name="read_clipboard",
-            description=(
-                "Read the current system clipboard text. Use when the user asks "
-                "about what they copied or what's on their clipboard."
-            ),
-            properties={},
-            required=[],
-        ),
-        fn=read_clipboard,
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="take_screenshot",
-            description=(
-                "Capture the user's screen and (if a vision provider is configured) "
-                "describe what's on it. Use when the user asks about what's on their screen."
-            ),
-            properties={
-                "question": {
-                    "type": "string",
-                    "description": "What the user wants to know about the screen, used as the vision prompt. Optional.",
-                },
-            },
-            required=[],
-        ),
-        fn=take_screenshot,
-        speak_text="Looking at your screen.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="capture_webcam",
-            description=(
-                "Capture one frame from the user's webcam and (if vision is configured) "
-                "describe it. Use when the user asks 'what do you see' or wants you to "
-                "look at them or what they're holding."
-            ),
-            properties={
-                "question": {
-                    "type": "string",
-                    "description": "What the user wants you to look for, used as the vision prompt. Optional.",
-                },
-            },
-            required=[],
-        ),
-        fn=capture_webcam,
-        speak_text="Let me see.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="web_search",
-            description=(
-                "Search the web with Google (via Serper) for current information. "
-                "Use for facts, news, or anything you don't already know."
-            ),
-            properties={
-                "query": {"type": "string", "description": "The search query."},
-                "max_results": {"type": "integer", "description": "How many results (1-10). Default 5."},
-            },
-            required=["query"],
-        ),
-        fn=web_search,
-        speak_text="Searching the web.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="read_selected_text",
-            description=(
-                "Read whatever text the user currently has selected/highlighted in the "
-                "frontmost app (macOS only). Triggers Cmd+C and reads the result. "
-                "Use when the user says 'look at what I have selected' or 'what does this say'."
-            ),
-            properties={},
-            required=[],
-        ),
-        fn=read_selected_text,
-        speak_text="Reading your selection.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="read_focused_input",
-            description=(
-                "Read the value of the focused text field in the frontmost app (macOS only). "
-                "Use when the user says 'what am I typing' or 'look at this input'."
-            ),
-            properties={},
-            required=[],
-        ),
-        fn=read_focused_input,
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="read_file",
-            description=(
-                "Read the contents of a file at a given absolute or ~-prefixed path. "
-                "Truncates to the first 100KB. Use when the user asks about a specific file."
-            ),
-            properties={
-                "path": {"type": "string", "description": "Absolute or ~-prefixed path to the file."},
-                "max_bytes": {"type": "integer", "description": "Truncate after this many bytes. Default 100000."},
-            },
-            required=["path"],
-        ),
-        fn=read_file,
-        speak_text="Opening that file.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="list_folder",
-            description=(
-                "List the contents of a folder (sorted, folders first). "
-                "Set recursive=true to walk subfolders."
-            ),
-            properties={
-                "path": {"type": "string", "description": "Absolute or ~-prefixed folder path."},
-                "recursive": {"type": "boolean", "description": "Walk subfolders. Default false."},
-                "max_items": {"type": "integer", "description": "Cap items shown. Default 50."},
-            },
-            required=["path"],
-        ),
-        fn=list_folder,
-        speak_text="Listing that folder.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="read_finder_selection",
-            description=(
-                "Return the file or folder paths currently selected in Finder (macOS only). "
-                "Use when the user says 'look at what I picked in Finder'."
-            ),
-            properties={},
-            required=[],
-        ),
-        fn=read_finder_selection,
-        speak_text="Checking Finder.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="read_browser_url",
-            description=(
-                "Return the URL of the current tab of the frontmost browser "
-                "(Chrome, Safari, Arc, Brave, Edge, Firefox; macOS only)."
-            ),
-            properties={},
-            required=[],
-        ),
-        fn=read_browser_url,
-        speak_text="Checking your browser.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="read_browser_page_text",
-            description=(
-                "Return the visible text of the current browser page via JavaScript "
-                "(macOS only). Requires 'Allow JavaScript from Apple Events' in the browser. "
-                "Use when the user asks about the page they're looking at."
-            ),
-            properties={
-                "max_chars": {"type": "integer", "description": "Truncate after this many chars. Default 8000."},
-            },
-            required=[],
-        ),
-        fn=read_browser_page_text,
-        speak_text="Reading that page.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="list_browser_tabs",
-            description=(
-                "List the title + URL of every open tab in the frontmost browser (macOS only)."
-            ),
-            properties={},
-            required=[],
-        ),
-        fn=list_browser_tabs,
-        speak_text="Checking your tabs.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="capture_frontmost_window",
-            description=(
-                "Capture the frontmost application window (macOS only) and describe it via "
-                "the configured vision provider. Use when the user says 'look at this window'."
-            ),
-            properties={
-                "question": {"type": "string", "description": "What to look for. Optional."},
-            },
-            required=[],
-        ),
-        fn=capture_frontmost_window,
-        speak_text="Looking at your window.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="capture_screen_region",
-            description=(
-                "Capture a rectangular region of the screen (macOS only) and describe it. "
-                "Coordinates are in screen points: (0,0) is top-left."
-            ),
-            properties={
-                "x": {"type": "integer", "description": "Left edge in screen points."},
-                "y": {"type": "integer", "description": "Top edge in screen points."},
-                "width": {"type": "integer", "description": "Region width in points."},
-                "height": {"type": "integer", "description": "Region height in points."},
-                "question": {"type": "string", "description": "What to look for. Optional."},
-            },
-            required=["x", "y", "width", "height"],
-        ),
-        fn=capture_screen_region,
-        speak_text="Looking at that area.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="capture_display",
-            description=(
-                "Capture a specific display/monitor by index (1 = primary; macOS only). "
-                "Note: monitors, not virtual desktops/Spaces — those aren't capturable."
-            ),
-            properties={
-                "display": {"type": "integer", "description": "Display index (1 = primary)."},
-                "question": {"type": "string", "description": "What to look for. Optional."},
-            },
-            required=[],
-        ),
-        fn=capture_display,
-        speak_text="Looking at that display.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="get_frontmost_app",
-            description=(
-                "Return the name of the application currently in the foreground (macOS only). "
-                "Use when the user asks 'what app am I in?'."
-            ),
-            properties={},
-            required=[],
-        ),
-        fn=get_frontmost_app,
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="list_running_apps",
-            description=(
-                "List the foreground (visible) running applications (macOS only)."
-            ),
-            properties={},
-            required=[],
-        ),
-        fn=list_running_apps,
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="read_terminal_output",
-            description=(
-                "Return the visible output of the frontmost Terminal.app or iTerm2 window "
-                "(macOS only). Use when the user says 'look at my terminal'."
-            ),
-            properties={
-                "max_lines": {"type": "integer", "description": "Cap to last N lines. Default 80."},
-            },
-            required=[],
-        ),
-        fn=read_terminal_output,
-        speak_text="Checking your terminal.",
-    ),
-    Tool(
-        schema=FunctionSchema(
-            name="get_current_weather",
-            description="Get the current weather (demo — returns dummy data).",
-            properties={
-                "location": {"type": "string", "description": "The city and state, e.g. San Francisco, CA"},
-                "format": {
-                    "type": "string",
-                    "enum": ["celsius", "fahrenheit"],
-                    "description": "The temperature unit to use. Infer this from the user's location.",
-                },
-            },
-            required=["location", "format"],
-        ),
-        fn=get_current_weather,
-        speak_text="Let me check on that.",
-    ),
-]
+class ToolRegistry:
+    """Holds tool instances, hands out schemas, registers handlers on an LLM."""
+
+    # Stable category order in the capability summary — read top-to-bottom so
+    # related tools cluster naturally for the LLM.
+    _CATEGORY_ORDER = ("input", "files", "browser", "vision", "system", "web", "demo", "misc")
+
+    def __init__(self) -> None:
+        self._tools: dict[str, BaseTool] = {}
+
+    def register(self, tool_cls: type[BaseTool]) -> type[BaseTool]:
+        if not tool_cls.name:
+            raise ValueError(f"{tool_cls.__name__} must set `name`")
+        if tool_cls.name in self._tools:
+            raise ValueError(f"Duplicate tool name: {tool_cls.name}")
+        self._tools[tool_cls.name] = tool_cls()
+        return tool_cls
+
+    def all(self) -> list[BaseTool]:
+        return list(self._tools.values())
+
+    def get(self, name: str) -> BaseTool:
+        return self._tools[name]
+
+    def schemas(self) -> list[FunctionSchema]:
+        return [t.to_schema() for t in self.all()]
+
+    def by_category(self) -> dict[str, list[BaseTool]]:
+        groups: dict[str, list[BaseTool]] = {}
+        for tool in self.all():
+            groups.setdefault(tool.category, []).append(tool)
+        # Stable order: known categories first, then anything unexpected.
+        ordered: dict[str, list[BaseTool]] = {}
+        for cat in self._CATEGORY_ORDER:
+            if cat in groups:
+                ordered[cat] = groups.pop(cat)
+        ordered.update(groups)
+        return ordered
+
+    def capabilities_summary(self) -> str:
+        """One-line-per-category tool inventory for the system prompt.
+
+        Used to fill the `{tool_capabilities}` placeholder so the LLM knows
+        what's available without the prompt hard-coding tool names.
+        """
+        lines: list[str] = []
+        for cat, tools in self.by_category().items():
+            names = ", ".join(t.name for t in tools)
+            lines.append(f"- {cat}: {names}")
+        return "\n".join(lines)
+
+    def register_handlers(self, llm, session_log=None) -> list[FunctionSchema]:
+        """Register every tool on the given LLM. Returns the FunctionSchemas.
+
+        Pass `session_log` (a `session_log.SessionLog`) to record tool calls,
+        results, and errors as kebab-case events alongside user/bot speech.
+        """
+        for tool in self.all():
+            llm.register_function(tool.name, _make_handler(tool, session_log=session_log))
+        return self.schemas()
 
 
-def _make_handler(tool: Tool, session_log=None):
-    """Wrap a sync tool fn as a Pipecat function-call handler with an optional spoken filler.
+REGISTRY = ToolRegistry()
 
-    The tool's sync `fn` is run inside `asyncio.to_thread`, which is critical:
+
+def _make_handler(tool: BaseTool, session_log=None) -> Callable:
+    """Wrap a tool's `execute` as a Pipecat function-call handler.
+
+    The sync `execute` runs inside `asyncio.to_thread`, which is critical:
     every tool here does blocking I/O (screen capture, webcam read, network
     calls). Running them on the asyncio event loop directly starves the
     Soniox STT/TTS WebSockets of heartbeats and the connections drop after
     ~30s with `Error: 408 _receive_messages - Request timeout`.
 
-    Result-shaping rule: dict results pass through unchanged (the LLM sees them as
-    structured data); any other result is wrapped in `{"result": value}`.
-
-    If `session_log` is provided, each call writes `tool-called` (with args) and
-    either `tool-result` (with the result string/dict) or `tool-error` (with the
-    exception text) to the session log.
+    Result-shaping rule: dict results pass through unchanged (the LLM sees
+    them as structured data); any other result is wrapped in `{"result": value}`.
     """
     import asyncio
 
@@ -1212,25 +1014,25 @@ def _make_handler(tool: Tool, session_log=None):
 
         args = params.arguments or {}
         if session_log is not None:
-            session_log.event("tool-called", name=tool.schema.name, args=args)
+            session_log.event("tool-called", name=tool.name, args=args)
 
         if tool.speak_text:
             await params.llm.push_frame(TTSSpeakFrame(tool.speak_text))
         try:
             try:
-                result = await asyncio.to_thread(tool.fn, **args)
+                result = await asyncio.to_thread(tool.execute, **args)
             except TypeError:
-                # Tolerate the LLM passing extra/wrong-named args — call with no args.
-                result = await asyncio.to_thread(tool.fn)
+                # Tolerate the LLM passing extra/wrong-named args — call with none.
+                result = await asyncio.to_thread(tool.execute)
         except Exception as exc:
             err = f"{type(exc).__name__}: {exc}"
             if session_log is not None:
-                session_log.event("tool-error", name=tool.schema.name, error=err)
-            await params.result_callback({"result": f"Tool {tool.schema.name} failed: {err}"})
+                session_log.event("tool-error", name=tool.name, error=err)
+            await params.result_callback({"result": f"Tool {tool.name} failed: {err}"})
             return
 
         if session_log is not None:
-            session_log.event("tool-result", name=tool.schema.name, result=result)
+            session_log.event("tool-result", name=tool.name, result=result)
         if isinstance(result, dict):
             await params.result_callback(result)
         else:
@@ -1239,12 +1041,320 @@ def _make_handler(tool: Tool, session_log=None):
     return handler
 
 
-def register_all(llm, session_log=None) -> list[FunctionSchema]:
-    """Register every tool on the given LLM and return the FunctionSchemas to put in a ToolsSchema.
+# ---------------------------------------------------------------------------
+# Tool definitions — each class wraps a module-level helper above.
+# ---------------------------------------------------------------------------
 
-    Pass `session_log` (a `session_log.SessionLog`) to record tool calls, results,
-    and errors as kebab-case events alongside user/bot speech.
-    """
-    for tool in TOOLS:
-        llm.register_function(tool.schema.name, _make_handler(tool, session_log=session_log))
-    return [tool.schema for tool in TOOLS]
+
+@REGISTRY.register
+class ReadClipboardTool(BaseTool):
+    name = "read_clipboard"
+    category = "input"
+    description = (
+        "Read the current system clipboard text. Use when the user asks "
+        "about what they copied or what's on their clipboard."
+    )
+
+    def execute(self) -> str:
+        return read_clipboard()
+
+
+@REGISTRY.register
+class ReadSelectedTextTool(BaseTool):
+    name = "read_selected_text"
+    category = "input"
+    speak_text = "Reading your selection."
+    description = (
+        "Read whatever text the user currently has selected/highlighted in the "
+        "frontmost app (macOS only). Triggers Cmd+C and reads the result. "
+        "Use when the user says 'look at what I have selected' or 'what does this say'."
+    )
+
+    def execute(self) -> str:
+        return read_selected_text()
+
+
+@REGISTRY.register
+class ReadFocusedInputTool(BaseTool):
+    name = "read_focused_input"
+    category = "input"
+    description = (
+        "Read the value of the focused text field in the frontmost app (macOS only). "
+        "Use when the user says 'what am I typing' or 'look at this input'."
+    )
+
+    def execute(self) -> str:
+        return read_focused_input()
+
+
+@REGISTRY.register
+class ReadFileTool(BaseTool):
+    name = "read_file"
+    category = "files"
+    speak_text = "Opening that file."
+    description = (
+        "Read the contents of a file at a given absolute or ~-prefixed path. "
+        "Truncates to the first 100KB. Use when the user asks about a specific file."
+    )
+    parameters = {
+        "path": {"type": "string", "description": "Absolute or ~-prefixed path to the file."},
+        "max_bytes": {"type": "integer", "description": "Truncate after this many bytes. Default 100000."},
+    }
+    required = ["path"]
+
+    def execute(self, path: str, max_bytes: int = 100_000) -> str:
+        return read_file(path, max_bytes)
+
+
+@REGISTRY.register
+class ListFolderTool(BaseTool):
+    name = "list_folder"
+    category = "files"
+    speak_text = "Listing that folder."
+    description = (
+        "List the contents of a folder (sorted, folders first). "
+        "Set recursive=true to walk subfolders."
+    )
+    parameters = {
+        "path": {"type": "string", "description": "Absolute or ~-prefixed folder path."},
+        "recursive": {"type": "boolean", "description": "Walk subfolders. Default false."},
+        "max_items": {"type": "integer", "description": "Cap items shown. Default 50."},
+    }
+    required = ["path"]
+
+    def execute(self, path: str, recursive: bool = False, max_items: int = 50) -> str:
+        return list_folder(path, recursive, max_items)
+
+
+@REGISTRY.register
+class ReadFinderSelectionTool(BaseTool):
+    name = "read_finder_selection"
+    category = "files"
+    speak_text = "Checking Finder."
+    description = (
+        "Return the file or folder paths currently selected in Finder (macOS only). "
+        "Use when the user says 'look at what I picked in Finder'."
+    )
+
+    def execute(self) -> str:
+        return read_finder_selection()
+
+
+@REGISTRY.register
+class ReadBrowserUrlTool(BaseTool):
+    name = "read_browser_url"
+    category = "browser"
+    speak_text = "Checking your browser."
+    description = (
+        "Return the URL of the current tab of the frontmost browser "
+        "(Chrome, Safari, Arc, Brave, Edge, Firefox; macOS only)."
+    )
+
+    def execute(self) -> str:
+        return read_browser_url()
+
+
+@REGISTRY.register
+class ReadBrowserPageTextTool(BaseTool):
+    name = "read_browser_page_text"
+    category = "browser"
+    speak_text = "Reading that page."
+    description = (
+        "Return the visible text of the current browser page via JavaScript "
+        "(macOS only). Requires 'Allow JavaScript from Apple Events' in the browser. "
+        "Use when the user asks about the page they're looking at."
+    )
+    parameters = {
+        "max_chars": {"type": "integer", "description": "Truncate after this many chars. Default 8000."},
+    }
+
+    def execute(self, max_chars: int = 8000) -> str:
+        return read_browser_page_text(max_chars)
+
+
+@REGISTRY.register
+class ListBrowserTabsTool(BaseTool):
+    name = "list_browser_tabs"
+    category = "browser"
+    speak_text = "Checking your tabs."
+    description = "List the title + URL of every open tab in the frontmost browser (macOS only)."
+
+    def execute(self) -> str:
+        return list_browser_tabs()
+
+
+@REGISTRY.register
+class TakeScreenshotTool(BaseTool):
+    name = "take_screenshot"
+    category = "vision"
+    speak_text = "Looking at your screen."
+    description = (
+        "Capture the user's screen and (if a vision provider is configured) "
+        "describe what's on it. Use when the user asks about what's on their screen."
+    )
+    parameters = {
+        "question": {
+            "type": "string",
+            "description": "What the user wants to know about the screen, used as the vision prompt. Optional.",
+        },
+    }
+
+    def execute(self, question: str = "") -> dict:
+        return take_screenshot(question)
+
+
+@REGISTRY.register
+class CaptureFrontmostWindowTool(BaseTool):
+    name = "capture_frontmost_window"
+    category = "vision"
+    speak_text = "Looking at your window."
+    description = (
+        "Capture the frontmost application window (macOS only) and describe it via "
+        "the configured vision provider. Use when the user says 'look at this window'."
+    )
+    parameters = {
+        "question": {"type": "string", "description": "What to look for. Optional."},
+    }
+
+    def execute(self, question: str = "") -> dict:
+        return capture_frontmost_window(question)
+
+
+@REGISTRY.register
+class CaptureScreenRegionTool(BaseTool):
+    name = "capture_screen_region"
+    category = "vision"
+    speak_text = "Looking at that area."
+    description = (
+        "Capture a rectangular region of the screen (macOS only) and describe it. "
+        "Coordinates are in screen points: (0,0) is top-left."
+    )
+    parameters = {
+        "x": {"type": "integer", "description": "Left edge in screen points."},
+        "y": {"type": "integer", "description": "Top edge in screen points."},
+        "width": {"type": "integer", "description": "Region width in points."},
+        "height": {"type": "integer", "description": "Region height in points."},
+        "question": {"type": "string", "description": "What to look for. Optional."},
+    }
+    required = ["x", "y", "width", "height"]
+
+    def execute(self, x: int, y: int, width: int, height: int, question: str = "") -> dict:
+        return capture_screen_region(x, y, width, height, question)
+
+
+@REGISTRY.register
+class CaptureDisplayTool(BaseTool):
+    name = "capture_display"
+    category = "vision"
+    speak_text = "Looking at that display."
+    description = (
+        "Capture a specific display/monitor by index (1 = primary; macOS only). "
+        "Note: monitors, not virtual desktops/Spaces — those aren't capturable."
+    )
+    parameters = {
+        "display": {"type": "integer", "description": "Display index (1 = primary)."},
+        "question": {"type": "string", "description": "What to look for. Optional."},
+    }
+
+    def execute(self, display: int = 1, question: str = "") -> dict:
+        return capture_display(display, question)
+
+
+@REGISTRY.register
+class CaptureWebcamTool(BaseTool):
+    name = "capture_webcam"
+    category = "vision"
+    speak_text = "Let me see."
+    description = (
+        "Capture one frame from the user's webcam and (if vision is configured) "
+        "describe it. Use when the user asks 'what do you see' or wants you to "
+        "look at them or what they're holding."
+    )
+    parameters = {
+        "question": {
+            "type": "string",
+            "description": "What the user wants you to look for, used as the vision prompt. Optional.",
+        },
+    }
+
+    def execute(self, question: str = "") -> dict:
+        return capture_webcam(question)
+
+
+@REGISTRY.register
+class GetFrontmostAppTool(BaseTool):
+    name = "get_frontmost_app"
+    category = "system"
+    description = (
+        "Return the name of the application currently in the foreground (macOS only). "
+        "Use when the user asks 'what app am I in?'."
+    )
+
+    def execute(self) -> str:
+        return get_frontmost_app()
+
+
+@REGISTRY.register
+class ListRunningAppsTool(BaseTool):
+    name = "list_running_apps"
+    category = "system"
+    description = "List the foreground (visible) running applications (macOS only)."
+
+    def execute(self) -> str:
+        return list_running_apps()
+
+
+@REGISTRY.register
+class ReadTerminalOutputTool(BaseTool):
+    name = "read_terminal_output"
+    category = "system"
+    speak_text = "Checking your terminal."
+    description = (
+        "Return the visible output of the frontmost Terminal.app or iTerm2 window "
+        "(macOS only). Use when the user says 'look at my terminal'."
+    )
+    parameters = {
+        "max_lines": {"type": "integer", "description": "Cap to last N lines. Default 80."},
+    }
+
+    def execute(self, max_lines: int = 80) -> str:
+        return read_terminal_output(max_lines)
+
+
+@REGISTRY.register
+class WebSearchTool(BaseTool):
+    name = "web_search"
+    category = "web"
+    speak_text = "Searching the web."
+    description = (
+        "Search the web with Google (via Serper) for current information. "
+        "Use for facts, news, or anything you don't already know."
+    )
+    parameters = {
+        "query": {"type": "string", "description": "The search query."},
+        "max_results": {"type": "integer", "description": "How many results (1-10). Default 5."},
+    }
+    required = ["query"]
+
+    def execute(self, query: str, max_results: int = 5) -> str:
+        return web_search(query, max_results)
+
+
+@REGISTRY.register
+class GetCurrentWeatherTool(BaseTool):
+    name = "get_current_weather"
+    category = "demo"
+    speak_text = "Let me check on that."
+    description = "Get the current weather (demo — returns dummy data)."
+    parameters = {
+        "location": {"type": "string", "description": "The city and state, e.g. San Francisco, CA"},
+        "format": {
+            "type": "string",
+            "enum": ["celsius", "fahrenheit"],
+            "description": "The temperature unit to use. Infer this from the user's location.",
+        },
+    }
+    required = ["location", "format"]
+
+    def execute(self, location: str = "", format: str = "fahrenheit") -> dict:
+        return get_current_weather(location, format)

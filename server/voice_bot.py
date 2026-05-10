@@ -116,11 +116,17 @@ def build_components(
     tts = _build_tts(cfg)
     llm = _build_llm(cfg)
 
-    schemas = tools_module.register_all(llm, session_log=session_log)
+    schemas = tools_module.REGISTRY.register_handlers(llm, session_log=session_log)
     tools = ToolsSchema(standard_tools=schemas)
 
+    # If the prompt contains the `{tool_capabilities}` placeholder, fill it
+    # with the registry's category-grouped inventory so the LLM knows what
+    # tools exist without the prompt hard-coding their names.
+    system_prompt = cfg.system_prompt.replace(
+        "{tool_capabilities}", tools_module.REGISTRY.capabilities_summary()
+    )
     messages: list[ChatCompletionMessageParam] = [
-        ChatCompletionSystemMessageParam(role="system", content=cfg.system_prompt),
+        ChatCompletionSystemMessageParam(role="system", content=system_prompt),
     ]
     if initial_user_message is not None:
         messages.append({"role": "user", "content": initial_user_message})

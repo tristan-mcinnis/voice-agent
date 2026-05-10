@@ -130,9 +130,37 @@ def main() -> int:
 
     # --- Registry sanity ----------------------------------------------------
     print("\n" + "=" * 72)
-    print(f"TOOLS registry has {len(tools.TOOLS)} entries:")
-    for t in tools.TOOLS:
-        print(f"  - {t.schema.name}")
+    registry = tools.REGISTRY
+    all_tools = registry.all()
+    print(f"REGISTRY has {len(all_tools)} entries:")
+    for t in all_tools:
+        print(f"  - [{t.category}] {t.name}")
+
+    print("\nSchema round-trip (from BaseTool.to_schema):")
+    for schema in registry.schemas():
+        req = ",".join(schema.required) if schema.required else "-"
+        props = ",".join(schema.properties.keys()) if schema.properties else "-"
+        print(f"  - {schema.name}  required=[{req}]  props=[{props}]")
+
+    print("\nCapability summary (injected into {tool_capabilities}):")
+    print(registry.capabilities_summary())
+
+    # Exercise BaseTool.execute via the registry (proves the class layer works,
+    # not just the underlying module helpers we already called above).
+    print("\nRegistry execute() smoke calls:")
+    smoke = [
+        ("read_clipboard", {}),
+        ("read_file", {"path": __file__, "max_bytes": 200}),
+        ("get_current_weather", {"location": "San Francisco, CA", "format": "fahrenheit"}),
+    ]
+    for name, kwargs in smoke:
+        try:
+            out = registry.get(name).execute(**kwargs)
+            preview = repr(out)[:120]
+            print(f"  PASS  {name}({kwargs}) -> {preview}")
+        except Exception as exc:
+            print(f"  FAIL  {name}({kwargs}) -> {type(exc).__name__}: {exc}")
+            results.append((f"registry.{name}", FAIL, 0.0, str(exc)))
 
     # --- Summary ------------------------------------------------------------
     print("\n" + "=" * 72)
