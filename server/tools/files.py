@@ -10,6 +10,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from tools._macos import is_macos, macos_only, osascript
 from tools.registry import REGISTRY, BaseTool
 
 
@@ -529,10 +530,8 @@ class ReadFinderSelectionTool(BaseTool):
     )
 
     def execute(self) -> str:
-        import sys
-        if sys.platform != "darwin":
-            return f"Finder selection only works on macOS — current platform is {sys.platform}."
-        import subprocess as sp
+        if not is_macos():
+            return macos_only("Finder selection")
 
         script = '''
         tell application "Finder"
@@ -548,12 +547,8 @@ class ReadFinderSelectionTool(BaseTool):
         end tell
         '''
         try:
-            result = sp.run(
-                ["osascript", "-e", script],
-                capture_output=True, text=True, timeout=10.0, check=True,
-            )
-            output = result.stdout.strip()
-        except sp.TimeoutExpired:
+            output = osascript(script, timeout=10.0)
+        except subprocess.TimeoutExpired:
             return "Finder didn't respond in time. Click on Finder once and try again."
         except Exception as exc:
             return f"Could not read Finder selection: {exc}"

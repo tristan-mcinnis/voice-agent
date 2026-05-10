@@ -54,12 +54,17 @@ class PromptBuilder:
     # Layer loaders
     # ------------------------------------------------------------------
 
-    def load_soul_md(self) -> str:
+    def load_soul_md(self, tool_descriptions: str = "") -> tuple[str, bool]:
         """Load the agent's identity from ``<agent_home>/SOUL.md``.
 
         Falls back to ``default_identity`` (usually the config's
         ``system_prompt``) when the file is missing or contains only
         template comments.
+
+        Returns ``(soul_text, consumed_tools)``. ``consumed_tools`` is
+        True when the legacy ``{tool_capabilities}`` placeholder was
+        found and substituted — the caller should suppress the separate
+        tool inventory section to avoid duplication.
         """
         soul_path = self.agent_home / "SOUL.md"
         if soul_path.exists():
@@ -82,8 +87,18 @@ class PromptBuilder:
                     continue
                 substantive.append(ln)
             if substantive:
-                return content
-        return self.default_identity
+                return self._maybe_substitute_tools(content, tool_descriptions)
+        return self._maybe_substitute_tools(self.default_identity, tool_descriptions)
+
+    @staticmethod
+    def _maybe_substitute_tools(text: str, tool_descriptions: str) -> tuple[str, bool]:
+        """If ``{tool_capabilities}`` is in *text*, substitute it.
+
+        Returns ``(result, did_substitute)``.
+        """
+        if "{tool_capabilities}" in text and tool_descriptions:
+            return text.replace("{tool_capabilities}", tool_descriptions), True
+        return text, False
 
     def build_context_files_prompt(self, cwd: Path) -> str:
         """Scan *cwd* for project-specific rule files.
@@ -155,17 +170,16 @@ class PromptBuilder:
         tools: str,
         skills: str,
     ) -> str:
-        """Concatenate layers into the final frozen system prompt."""
+        """Concatenate layers into the final frozen system prompt.
+
+        Pure concatenation — no conditional logic, no backward-compat hacks.
+        Any ``{tool_capabilities}`` substitution happened upstream in
+        ``load_soul_md()``.
+        """
         parts: list[str] = []
 
         # Soul / Identity
         if soul:
-            # Backward-compat: if the soul (or fallback default_identity)
-            # still contains the legacy {tool_capabilities} placeholder,
-            # substitute it inline so existing configs don't break.
-            if "{tool_capabilities}" in soul and tools:
-                soul = soul.replace("{tool_capabilities}", tools)
-                tools = ""
             parts.append(soul)
 
         # Cognitive stack — Memory and User profile
@@ -207,19 +221,24 @@ class PromptBuilder:
             cwd: Directory to scan for project context files. Defaults to
                 the current working directory.
         """
-        soul = self.load_soul_md()
+        tool_docs = self.get_tool_descriptions()
+        soul, consumed_tools = self.load_soul_md(tool_descriptions=tool_docs)
         user_profile = self.memory_store.load_user_md()
         project_memory = self.memory_store.load_memory_md()
         project_context = self.build_context_files_prompt(cwd or Path.cwd())
-        tool_docs = self.get_tool_descriptions()
         skills_index = self.get_relevant_skills_index(user_input)
+
+        # If the soul layer already absorbed the tool inventory (legacy
+        # {tool_capabilities} placeholder was present), suppress the
+        # separate tool section to avoid duplication.
+        tools = "" if consumed_tools else tool_docs
 
         return self.assemble_system_prompt(
             soul=soul,
             user=user_profile,
             memory=project_memory,
             context=project_context,
-            tools=tool_docs,
+            tools=tools,
             skills=skills_index,
         )
 

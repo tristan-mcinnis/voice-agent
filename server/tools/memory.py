@@ -19,12 +19,9 @@ from typing import Optional
 
 from loguru import logger
 
+from agent.memory_store import USER_CHAR_LIMIT, MEMORY_CHAR_LIMIT  # noqa: F401  # re-exported
 from agent.paths import memories_dir
 from tools.registry import BaseTool, REGISTRY
-
-# Character limits — voice context is small, so keep these tight.
-USER_CHAR_LIMIT = 1375
-MEMORY_CHAR_LIMIT = 2200
 
 
 def _limit_for(target: str) -> int:

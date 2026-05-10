@@ -64,11 +64,8 @@ def _language_from_hint(hint: str) -> Language:
 
 
 def _build_stt(config: Config) -> SonioxSTTService:
+    """Construct the STT service. Only Soniox is wired; add a branch for new providers."""
     cfg = config.stt
-    if cfg.provider != "soniox":
-        raise NotImplementedError(
-            f"STT provider {cfg.provider!r} not wired up. Add a builder in voice_bot._build_stt."
-        )
     return SonioxSTTService(
         api_key=require_api_key(cfg.api_key_env, for_what="Soniox STT"),
         params=SonioxInputParams(
@@ -78,11 +75,8 @@ def _build_stt(config: Config) -> SonioxSTTService:
 
 
 def _build_tts(config: Config) -> SonioxTTSService:
+    """Construct the TTS service. Only Soniox is wired; add a branch for new providers."""
     cfg = config.tts
-    if cfg.provider != "soniox":
-        raise NotImplementedError(
-            f"TTS provider {cfg.provider!r} not wired up. Add a builder in voice_bot._build_tts."
-        )
     return SonioxTTSService(
         api_key=require_api_key(cfg.api_key_env, for_what="Soniox TTS"),
         settings=SonioxTTSService.Settings(voice=cfg.voice),
@@ -90,6 +84,7 @@ def _build_tts(config: Config) -> SonioxTTSService:
 
 
 def _build_llm(config: Config) -> OpenAILLMService:
+    """Construct the LLM service. Any OpenAI-compatible endpoint works by changing config.yaml."""
     cfg = config.llm
     return OpenAILLMService(
         api_key=require_api_key(cfg.api_key_env, for_what=f"{cfg.provider} LLM"),

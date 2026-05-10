@@ -134,25 +134,20 @@ def _install_local_audio_lifecycle(
         logger.info("Soniox TTS connected")
         await rendezvous.tts_ready()
 
-    @context_aggregator.user().event_handler("on_user_mute_started")
-    async def _on_user_mute_started(*_args):
-        logger.info("🔇 USER MUTED (bot is speaking)")
-
-    @context_aggregator.user().event_handler("on_user_mute_stopped")
-    async def _on_user_mute_stopped(*_args):
-        logger.info("🎤 USER UNMUTED (mic is open)")
-
-    @context_aggregator.user().event_handler("on_user_turn_started")
-    async def _on_user_turn_started(*_args):
-        logger.info("🗣️  USER TURN STARTED — bot detected you started speaking")
-
-    @context_aggregator.user().event_handler("on_user_turn_stopped")
-    async def _on_user_turn_stopped(*_args):
-        logger.info("✅ USER TURN STOPPED — sending to LLM now")
-
-    @context_aggregator.user().event_handler("on_user_turn_idle")
-    async def _on_user_turn_idle(*_args):
-        logger.info("💤 user idle (no speech for a while)")
+    # Pure-logging diagnostics — data, not closures. Add a line to the table
+    # to register a new event; no new closure needed.
+    _DIAG_EVENTS = [
+        ("on_user_mute_started",  "🔇 USER MUTED (bot is speaking)"),
+        ("on_user_mute_stopped",  "🎤 USER UNMUTED (mic is open)"),
+        ("on_user_turn_started",  "🗣️  USER TURN STARTED — bot detected you started speaking"),
+        ("on_user_turn_stopped",  "✅ USER TURN STOPPED — sending to LLM now"),
+        ("on_user_turn_idle",     "💤 user idle (no speech for a while)"),
+    ]
+    user = context_aggregator.user()
+    for event, msg in _DIAG_EVENTS:
+        async def _handler(*_args, _msg: str = msg) -> None:
+            logger.info(_msg)
+        user.event_handler(event)(_handler)
 
 
 # ---------------------------------------------------------------------------

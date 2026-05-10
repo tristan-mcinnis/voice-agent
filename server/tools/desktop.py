@@ -15,57 +15,15 @@ import sys
 import time
 from typing import Optional
 
+from tools._macos import (
+    is_macos,
+    macos_only,
+    osascript,
+    frontmost_app_name,
+    frontmost_browser,
+    browser_url_script,
+)
 from tools.registry import REGISTRY, BaseTool
-
-
-# ---------------------------------------------------------------------------
-# macOS helpers
-# ---------------------------------------------------------------------------
-
-def _is_macos() -> bool:
-    return sys.platform == "darwin"
-
-
-def _macos_only_msg(label: str) -> str:
-    return f"{label} only works on macOS — current platform is {sys.platform}."
-
-
-def _osascript(script: str, *, timeout: float = 5.0) -> str:
-    """Run an AppleScript and return stripped stdout. Raises on non-zero exit."""
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True, text=True, timeout=timeout, check=True,
-    )
-    return result.stdout.strip()
-
-
-def _frontmost_app_name() -> str:
-    return _osascript(
-        'tell application "System Events" to '
-        'return name of first application process whose frontmost is true'
-    )
-
-
-# Apps we know how to query for URL / page-text / tabs.
-_BROWSERS = {
-    "Google Chrome", "Safari", "Arc", "Brave Browser",
-    "Microsoft Edge", "Firefox",
-}
-
-
-def _frontmost_browser() -> Optional[str]:
-    """Return the frontmost browser app name, or None if the front app isn't a known browser."""
-    try:
-        app = _frontmost_app_name()
-    except Exception:
-        return None
-    return app if app in _BROWSERS else None
-
-
-def _browser_url_script(app: str) -> str:
-    if app == "Safari":
-        return f'tell application "{app}" to return URL of current tab of front window'
-    return f'tell application "{app}" to return URL of active tab of front window'
 
 
 # ---------------------------------------------------------------------------
@@ -108,8 +66,8 @@ class ReadSelectedTextTool(BaseTool):
     )
 
     def execute(self) -> str:
-        if not _is_macos():
-            return _macos_only_msg("Selected-text reading")
+        if not is_macos():
+            return macos_only("Selected-text reading")
         try:
             import pyperclip
         except ImportError:
@@ -121,7 +79,7 @@ class ReadSelectedTextTool(BaseTool):
             original = None
 
         try:
-            _osascript(
+            osascript(
                 'tell application "System Events" to keystroke "c" using command down'
             )
         except Exception as exc:
@@ -158,8 +116,8 @@ class ReadFocusedInputTool(BaseTool):
     )
 
     def execute(self) -> str:
-        if not _is_macos():
-            return _macos_only_msg("Focused-input reading")
+        if not is_macos():
+            return macos_only("Focused-input reading")
 
         script = '''
         tell application "System Events"
@@ -173,7 +131,7 @@ class ReadFocusedInputTool(BaseTool):
         end tell
         '''
         try:
-            result = _osascript(script)
+            result = osascript(script)
         except Exception as exc:
             return f"Could not read focused input: {exc}"
 
@@ -198,16 +156,16 @@ class ReadBrowserUrlTool(BaseTool):
     )
 
     def execute(self) -> str:
-        if not _is_macos():
-            return _macos_only_msg("Browser URL reading")
-        app = _frontmost_browser()
+        if not is_macos():
+            return macos_only("Browser URL reading")
+        app = frontmost_browser()
         if app is None:
             return (
                 "No supported browser is in the foreground. "
                 "Bring Chrome, Safari, Arc, Brave, Edge, or Firefox to the front first."
             )
         try:
-            url = _osascript(_browser_url_script(app))
+            url = osascript(browser_url_script(app))
         except Exception as exc:
             return f"Could not read URL from {app}: {exc}"
         return f"{app}: {url}" if url else f"{app}: (empty URL)"
@@ -231,9 +189,9 @@ class ReadBrowserPageTextTool(BaseTool):
     }
 
     def execute(self, max_chars: int = 8000) -> str:
-        if not _is_macos():
-            return _macos_only_msg("Browser page reading")
-        app = _frontmost_browser()
+        if not is_macos():
+            return macos_only("Browser page reading")
+        app = frontmost_browser()
         if app is None:
             return "No supported browser is in the foreground."
 
@@ -251,7 +209,7 @@ class ReadBrowserPageTextTool(BaseTool):
             return f"Page-text reading not implemented for {app}."
 
         try:
-            text = _osascript(script, timeout=8.0)
+            text = osascript(script, timeout=8.0)
         except Exception as exc:
             return (
                 f"Could not read page text from {app}: {exc}. "
@@ -276,9 +234,9 @@ class ListBrowserTabsTool(BaseTool):
     )
 
     def execute(self) -> str:
-        if not _is_macos():
-            return _macos_only_msg("Browser tabs listing")
-        app = _frontmost_browser()
+        if not is_macos():
+            return macos_only("Browser tabs listing")
+        app = frontmost_browser()
         if app is None:
             return "No supported browser is in the foreground."
 
@@ -308,7 +266,7 @@ class ListBrowserTabsTool(BaseTool):
             '''
 
         try:
-            raw = _osascript(script, timeout=8.0)
+            raw = osascript(script, timeout=8.0)
         except Exception as exc:
             return f"Could not list tabs in {app}: {exc}"
 
@@ -340,10 +298,10 @@ class GetFrontmostAppTool(BaseTool):
     )
 
     def execute(self) -> str:
-        if not _is_macos():
-            return _macos_only_msg("Frontmost-app reading")
+        if not is_macos():
+            return macos_only("Frontmost-app reading")
         try:
-            return f"Frontmost app: {_frontmost_app_name()}"
+            return f"Frontmost app: {frontmost_app_name()}"
         except Exception as exc:
             return f"Could not determine frontmost app: {exc}"
 
@@ -355,14 +313,14 @@ class ListRunningAppsTool(BaseTool):
     description = "List the foreground (visible) running applications (macOS only)."
 
     def execute(self) -> str:
-        if not _is_macos():
-            return _macos_only_msg("Running apps listing")
+        if not is_macos():
+            return macos_only("Running apps listing")
         script = (
             'tell application "System Events" to '
             'return name of every application process whose background only is false'
         )
         try:
-            output = _osascript(script)
+            output = osascript(script)
         except Exception as exc:
             return f"Could not list running apps: {exc}"
 
@@ -389,11 +347,11 @@ class ReadTerminalOutputTool(BaseTool):
     }
 
     def execute(self, max_lines: int = 80) -> str:
-        if not _is_macos():
-            return _macos_only_msg("Terminal output reading")
+        if not is_macos():
+            return macos_only("Terminal output reading")
 
         try:
-            app = _frontmost_app_name()
+            app = frontmost_app_name()
         except Exception as exc:
             return f"Could not determine frontmost app: {exc}"
 
@@ -417,7 +375,7 @@ class ReadTerminalOutputTool(BaseTool):
             )
 
         try:
-            text = _osascript(script, timeout=5.0)
+            text = osascript(script, timeout=5.0)
         except Exception as exc:
             return f"Could not read {app} output: {exc}"
 

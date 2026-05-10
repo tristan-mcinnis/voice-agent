@@ -24,73 +24,36 @@ import tools.web       # noqa: F401
 import tools.memory    # noqa: F401
 import tools.search_history  # noqa: F401
 
+# Reassign tools whose names collide with submodule names (memory → tools/memory.py,
+# search_history → tools/search_history.py). Submodule imports bind the module object
+# to the package namespace, which shadows __getattr__. We override those here.
+# All other tools resolve via __getattr__ below.
+memory = REGISTRY.get("memory").execute
+search_history = REGISTRY.get("search_history").execute
+patch_memory = REGISTRY.get("memory").execute  # legacy alias
+
 
 # ---------------------------------------------------------------------------
-# Backward-compat: module-level callables that delegate to REGISTRY.execute()
+# Module-level __getattr__ — auto-resolves tool names from the registry.
+# No more per-tool boilerplate. Adding a tool = one file; __init__.py never changes.
 # ---------------------------------------------------------------------------
 
-def _compat(name: str):
-    """Return a callable that delegates to REGISTRY.get(name).execute()."""
-    def wrapper(*args, **kwargs):
-        return REGISTRY.get(name).execute(*args, **kwargs)
-    wrapper.__name__ = name
-    wrapper.__qualname__ = name
-    return wrapper
+# Attribute name → registry tool name. Only needed for aliases (e.g. the
+# compat name differs from the tool's `name` field). Most names are 1:1.
+_COMPAT_ALIASES: dict[str, str] = {
+    "patch_file": "patch",
+}
 
 
-# -- files.py compat ----------------------------------------------------------
-read_file = _compat("read_file")
-write_file = _compat("write_file")
-patch_file = _compat("patch")
-make_directory = _compat("make_directory")
-move_path = _compat("move_path")
-copy_path = _compat("copy_path")
-delete_path = _compat("delete_path")
-append_to_file = _compat("append_to_file")
-file_info = _compat("file_info")
-run_terminal_command = _compat("run_terminal_command")
-search_files = _compat("search_files")
-list_folder = _compat("list_folder")
-read_finder_selection = _compat("read_finder_selection")
-
-# -- capture.py compat -------------------------------------------------------
-take_screenshot = _compat("take_screenshot")
-capture_webcam = _compat("capture_webcam")
-capture_frontmost_window = _compat("capture_frontmost_window")
-capture_screen_region = _compat("capture_screen_region")
-capture_display = _compat("capture_display")
-
-# -- desktop.py compat -------------------------------------------------------
-read_clipboard = _compat("read_clipboard")
-read_selected_text = _compat("read_selected_text")
-read_focused_input = _compat("read_focused_input")
-read_browser_url = _compat("read_browser_url")
-read_browser_page_text = _compat("read_browser_page_text")
-list_browser_tabs = _compat("list_browser_tabs")
-get_frontmost_app = _compat("get_frontmost_app")
-list_running_apps = _compat("list_running_apps")
-read_terminal_output = _compat("read_terminal_output")
-
-# -- computer_use.py compat --------------------------------------------------
-list_ui_elements = _compat("list_ui_elements")
-click_element = _compat("click_element")
-click_at = _compat("click_at")
-type_text = _compat("type_text")
-press_key = _compat("press_key")
-scroll = _compat("scroll")
-mouse_move = _compat("mouse_move")
-shortcat_click = _compat("shortcat_click")
-
-# -- grounding_vision.py compat ----------------------------------------------
-find_on_screen = _compat("find_on_screen")
-
-# -- web.py compat -----------------------------------------------------------
-web_search = _compat("web_search")
-get_current_weather = _compat("get_current_weather")
-
-# -- memory.py compat --------------------------------------------------------
-memory = _compat("memory")
-patch_memory = _compat("memory")  # legacy name
-
-# -- search_history.py compat ------------------------------------------------
-search_history = _compat("search_history")
+def __getattr__(name: str):
+    """Resolve `tools.<name>(...)` → `REGISTRY.get(<name>).execute(...)`."""
+    if name.startswith("_"):
+        raise AttributeError(name)
+    tool_name = _COMPAT_ALIASES.get(name, name)
+    try:
+        return REGISTRY.get(tool_name).execute
+    except KeyError:
+        raise AttributeError(
+            f"module {__name__!r} has no attribute {name!r} "
+            f"(no tool registered as {tool_name!r})"
+        ) from None

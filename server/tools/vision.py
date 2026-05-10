@@ -19,22 +19,85 @@ from loguru import logger
 
 
 # ---------------------------------------------------------------------------
-# Vision config — set once at startup, read by describe_image / no_vision_message
+# Vision chain — the fallback list of providers as a proper object, not module-level
+# mutable state. Constructed once at startup; passed explicitly or accessed via
+# the module-level singleton. Tests construct their own chain; no temporal coupling.
 # ---------------------------------------------------------------------------
 
-_vision_providers: list[Any] = []
+class VisionChain:
+    """Ordered list of vision providers. First success wins.
+
+    Each provider is a ``config.VisionProvider``. The chain is immutable
+    after construction — no more ``set_vision_config()`` mutating module state.
+    """
+
+    def __init__(self, providers: list[Any]) -> None:
+        self._providers = list(providers)
+
+    @property
+    def providers(self) -> list[Any]:
+        return list(self._providers)
+
+    def describe(self, image_path: str, prompt: str) -> str | None:
+        """Walk the chain; return the first provider's description, or None."""
+        if not self._providers:
+            return None
+        for provider in self._providers:
+            result = try_describe_with(provider, image_path, prompt)
+            if result:
+                return result
+        return None
+
+    def no_vision_message(self) -> str:
+        """Build a spoken-friendly explanation when vision fails."""
+        if not self._providers:
+            return (
+                "I captured the image but vision is disabled in config.yaml. "
+                "Configure at least one vision provider there to enable describe."
+            )
+        names = ", ".join(p.name for p in self._providers)
+        missing = [
+            p.api_key_env for p in self._providers
+            if p.api_key_env and not os.getenv(p.api_key_env)
+        ]
+        if missing:
+            return (
+                f"I captured the image but every vision provider failed. "
+                f"Missing env vars: {', '.join(missing)}. "
+                f"Tried providers: {names}."
+            )
+        return (
+            f"I captured the image but every vision provider failed. "
+            f"Tried: {names}. Check the server logs for the exact errors."
+        )
+
+
+# Module-level singleton — set once at startup.
+_chain: VisionChain | None = None
 
 
 def set_vision_config(providers: list[Any]) -> None:
-    """Store the vision provider chain for the lifetime of the process.
+    """Initialise the vision chain from config at startup.
 
-    Called by ``voice_bot.build_components()`` after loading config.
-    ``describe_image()`` and ``no_vision_message()`` read from here
-    instead of calling ``load_config()`` — the vision system no longer
-    has a hidden dependency on the YAML loader.
+    Called by ``voice_bot.build_components()``. Must be called before
+    ``describe_image()`` or ``no_vision_message()``.
     """
-    global _vision_providers
-    _vision_providers = list(providers)
+    global _chain
+    _chain = VisionChain(providers)
+
+
+def _get_chain() -> VisionChain:
+    """Return the vision chain, raising if not yet configured.
+
+    Replaces the old silent-None-on-unconfigured behaviour with a loud
+    failure — temporal coupling made visible.
+    """
+    if _chain is None:
+        raise RuntimeError(
+            "Vision chain not configured. "
+            "Call set_vision_config() at startup before using describe_image()."
+        )
+    return _chain
 
 
 # ---------------------------------------------------------------------------
@@ -221,41 +284,15 @@ def try_describe_with(provider: Any, image_path: str, prompt: str) -> str | None
 def describe_image(image_path: str, prompt: str) -> str | None:
     """Walk the vision provider chain; first success wins.
 
-    Uses the config set by ``set_vision_config()`` at startup. If vision
-    hasn't been configured (e.g. in tests), returns None.
+    Delegates to the module-level ``VisionChain`` singleton, which must
+    be initialised via ``set_vision_config()`` at startup.
     """
-    if not _vision_providers:
-        return None
-
-    for provider in _vision_providers:
-        result = try_describe_with(provider, image_path, prompt)
-        if result:
-            return result
-    return None
+    return _get_chain().describe(image_path, prompt)
 
 
 def no_vision_message() -> str:
     """Build a spoken-friendly message explaining why vision didn't work.
 
-    Uses the config set by ``set_vision_config()`` at startup.
+    Delegates to the module-level ``VisionChain`` singleton.
     """
-    if not _vision_providers:
-        return (
-            "I captured the image but vision is disabled in config.yaml. "
-            "Configure at least one vision provider there to enable describe."
-        )
-    names = ", ".join(p.name for p in _vision_providers)
-    missing = [
-        p.api_key_env for p in _vision_providers
-        if p.api_key_env and not os.getenv(p.api_key_env)
-    ]
-    if missing:
-        return (
-            f"I captured the image but every vision provider failed. "
-            f"Missing env vars: {', '.join(missing)}. "
-            f"Tried providers: {names}."
-        )
-    return (
-        f"I captured the image but every vision provider failed. "
-        f"Tried: {names}. Check the server logs for the exact errors."
-    )
+    return _get_chain().no_vision_message()

@@ -13,49 +13,19 @@ Two complementary paths:
      games). The agent screenshots, reasons about coordinates, then acts.
 
 Mouse/keyboard input goes through pyautogui (lazy-imported, soft dep). AX
-enumeration goes through AppleScript via ``System Events`` — same pattern as
-the rest of ``tools/desktop.py``.
-
-Cache: ``list_ui_elements`` populates ``_LAST_ELEMENTS`` so ``click_element``
-can resolve an index without the LLM having to round-trip coordinates.
+enumeration goes through AppleScript via ``System Events`` — macOS helpers
+are shared via ``tools._macos``, not copy-pasted.
 """
 
 from __future__ import annotations
 
 import subprocess
-import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
 
+from tools._macos import is_macos, macos_only, osascript, frontmost_app_name
 from tools.registry import REGISTRY, BaseTool
-
-
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
-
-def _is_macos() -> bool:
-    return sys.platform == "darwin"
-
-
-def _macos_only(label: str) -> str:
-    return f"{label} only works on macOS — current platform is {sys.platform}."
-
-
-def _osascript(script: str, *, timeout: float = 8.0) -> str:
-    result = subprocess.run(
-        ["osascript", "-e", script],
-        capture_output=True, text=True, timeout=timeout, check=True,
-    )
-    return result.stdout.strip()
-
-
-def _frontmost_process() -> str:
-    return _osascript(
-        'tell application "System Events" to '
-        'return name of first application process whose frontmost is true'
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +70,7 @@ def _front_window_title() -> str:
 def _sensitive_context() -> Optional[str]:
     """Return a description of the sensitive app/window if any, else None."""
     try:
-        proc = _frontmost_process()
+        proc = frontmost_app_name()
     except Exception:
         proc = ""
     title = _front_window_title()
@@ -327,8 +297,8 @@ class ListUIElementsTool(BaseTool):
     )
 
     def execute(self, filter: str = "", max_items: int = 80) -> str:
-        if not _is_macos():
-            return _macos_only("list_ui_elements")
+        if not is_macos():
+            return macos_only("list_ui_elements")
         try:
             proc, elements = _ax_list()
         except subprocess.CalledProcessError as exc:
@@ -418,8 +388,8 @@ class ClickElementTool(BaseTool):
     required = ["index"]
 
     def execute(self, index: int, double: bool = False, confirm: bool = False) -> str:
-        if not _is_macos():
-            return _macos_only("click_element")
+        if not is_macos():
+            return macos_only("click_element")
         gate = _refuse_if_sensitive(f"click element [{index}]", confirm)
         if gate:
             return gate
@@ -474,8 +444,8 @@ class ClickAtTool(BaseTool):
     required = ["x", "y"]
 
     def execute(self, x: int, y: int, double: bool = False, button: str = "left", confirm: bool = False) -> str:
-        if not _is_macos():
-            return _macos_only("click_at")
+        if not is_macos():
+            return macos_only("click_at")
         gate = _refuse_if_sensitive(f"click at ({x},{y})", confirm)
         if gate:
             return gate
@@ -517,8 +487,8 @@ class TypeTextTool(BaseTool):
     required = ["text"]
 
     def execute(self, text: str, interval: float = 0.02, confirm: bool = False) -> str:
-        if not _is_macos():
-            return _macos_only("type_text")
+        if not is_macos():
+            return macos_only("type_text")
         preview = text if len(text) <= 30 else text[:27] + "..."
         gate = _refuse_if_sensitive(f"type {preview!r}", confirm)
         if gate:
@@ -533,7 +503,7 @@ class TypeTextTool(BaseTool):
             # pyautogui.typewrite can't handle non-ASCII — fall back to AppleScript.
             try:
                 escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-                _osascript(
+                osascript(
                     f'tell application "System Events" to keystroke "{escaped}"',
                     timeout=10.0,
                 )
@@ -565,8 +535,8 @@ class PressKeyTool(BaseTool):
     required = ["keys"]
 
     def execute(self, keys: str, confirm: bool = False) -> str:
-        if not _is_macos():
-            return _macos_only("press_key")
+        if not is_macos():
+            return macos_only("press_key")
         gate = _refuse_if_sensitive(f"press {keys}", confirm)
         if gate:
             return gate
@@ -611,8 +581,8 @@ class ScrollTool(BaseTool):
     required = ["amount"]
 
     def execute(self, amount: int, x: Optional[int] = None, y: Optional[int] = None, confirm: bool = False) -> str:
-        if not _is_macos():
-            return _macos_only("scroll")
+        if not is_macos():
+            return macos_only("scroll")
         gate = _refuse_if_sensitive(f"scroll {amount:+d}", confirm)
         if gate:
             return gate
@@ -667,8 +637,8 @@ class ShortcatClickTool(BaseTool):
     required = ["label"]
 
     def execute(self, label: str, confirm: bool = False) -> str:
-        if not _is_macos():
-            return _macos_only("shortcat_click")
+        if not is_macos():
+            return macos_only("shortcat_click")
         gate = _refuse_if_sensitive(f"shortcat_click {label!r}", confirm)
         if gate:
             return gate
@@ -739,8 +709,8 @@ class MouseMoveTool(BaseTool):
     required = ["x", "y"]
 
     def execute(self, x: int, y: int, duration: float = 0.1) -> str:
-        if not _is_macos():
-            return _macos_only("mouse_move")
+        if not is_macos():
+            return macos_only("mouse_move")
         try:
             pg = _import_pyautogui()
         except ImportError as exc:
