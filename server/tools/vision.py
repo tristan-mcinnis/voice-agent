@@ -13,29 +13,9 @@ from __future__ import annotations
 import base64
 import os
 import time
-from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from loguru import logger
-
-
-# ---------------------------------------------------------------------------
-# Capture path helpers (also used by desktop.py capture tools)
-# ---------------------------------------------------------------------------
-
-def captures_dir() -> Path:
-    """Where capture tools write their images. Mirrors session_log's VOICE_BOT_LOG_DIR."""
-    base = Path(os.getenv("VOICE_BOT_LOG_DIR", "logs"))
-    d = base / "captures"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def capture_path(kind: str, ext: str = "jpg") -> str:
-    """Build a timestamped path under logs/captures/."""
-    ts = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    return str(captures_dir() / f"{kind}-{ts}.{ext}")
 
 
 # ---------------------------------------------------------------------------

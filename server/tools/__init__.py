@@ -8,48 +8,63 @@ Domain-specific tool implementations live in:
   - web.py       — web search and external APIs
   - vision.py    — image description chain (no tool classes, called by desktop.py)
 
-For backward compatibility, all module-level tool functions are re-exported
-so `import tools; tools.read_file(...)` continues to work.
+Backward-compat callables (e.g. ``tools.read_file(...)``) delegate to the
+canonical ``BaseTool.execute()`` implementations via the REGISTRY.
 """
 
 from tools.registry import BaseTool, REGISTRY, ToolRegistry  # noqa: F401
-
-# Re-export all tool helper functions for backward compatibility.
-from tools.desktop import (  # noqa: F401
-    capture_display,
-    capture_frontmost_window,
-    capture_screen_region,
-    capture_webcam,
-    get_frontmost_app,
-    list_browser_tabs,
-    list_running_apps,
-    read_browser_page_text,
-    read_browser_url,
-    read_clipboard,
-    read_focused_input,
-    read_selected_text,
-    read_terminal_output,
-    take_screenshot,
-)
-from tools.files import (  # noqa: F401
-    append_to_file,
-    copy_path,
-    delete_path,
-    file_info,
-    list_folder,
-    make_directory,
-    move_path,
-    patch_file,
-    read_file,
-    read_finder_selection,
-    run_terminal_command,
-    search_files,
-    write_file,
-)
-from tools.web import get_current_weather, web_search  # noqa: F401
 
 # Side-effect imports: each module registers its tools on REGISTRY at import time.
 import tools.files     # noqa: F401
 import tools.desktop   # noqa: F401
 import tools.web       # noqa: F401
 import tools.memory    # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat: module-level callables that delegate to REGISTRY.execute()
+# ---------------------------------------------------------------------------
+
+def _compat(name: str):
+    """Return a callable that delegates to REGISTRY.get(name).execute()."""
+    def wrapper(*args, **kwargs):
+        return REGISTRY.get(name).execute(*args, **kwargs)
+    wrapper.__name__ = name
+    wrapper.__qualname__ = name
+    return wrapper
+
+
+# -- files.py compat ----------------------------------------------------------
+read_file = _compat("read_file")
+write_file = _compat("write_file")
+patch_file = _compat("patch")
+make_directory = _compat("make_directory")
+move_path = _compat("move_path")
+copy_path = _compat("copy_path")
+delete_path = _compat("delete_path")
+append_to_file = _compat("append_to_file")
+file_info = _compat("file_info")
+run_terminal_command = _compat("run_terminal_command")
+search_files = _compat("search_files")
+list_folder = _compat("list_folder")
+read_finder_selection = _compat("read_finder_selection")
+
+# -- desktop.py compat -------------------------------------------------------
+read_clipboard = _compat("read_clipboard")
+read_selected_text = _compat("read_selected_text")
+read_focused_input = _compat("read_focused_input")
+read_browser_url = _compat("read_browser_url")
+read_browser_page_text = _compat("read_browser_page_text")
+list_browser_tabs = _compat("list_browser_tabs")
+take_screenshot = _compat("take_screenshot")
+capture_webcam = _compat("capture_webcam")
+capture_frontmost_window = _compat("capture_frontmost_window")
+capture_screen_region = _compat("capture_screen_region")
+capture_display = _compat("capture_display")
+get_frontmost_app = _compat("get_frontmost_app")
+list_running_apps = _compat("list_running_apps")
+read_terminal_output = _compat("read_terminal_output")
+
+# -- web.py compat -----------------------------------------------------------
+web_search = _compat("web_search")
+get_current_weather = _compat("get_current_weather")

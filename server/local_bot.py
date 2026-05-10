@@ -66,6 +66,7 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
 )
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
+from connection_rendezvous import ConnectionRendezvous
 from processors import EchoSuppressor, SessionLog, SessionLogProcessor, WakeWordGate
 from hotkey_interrupt import install_interrupt_hotkey
 from voice_bot import build_components
@@ -112,31 +113,25 @@ def _install_local_audio_lifecycle(
 ) -> None:
     """Wire the dual-connection rendezvous and diagnostic event handlers.
 
-    On both `stt.on_connected` and `tts.on_connected`, push the seed context
-    frame exactly once — that triggers the bot's introduction.
+    Uses ``ConnectionRendezvous`` to push the seed context frame exactly once
+    when both STT and TTS are connected — that triggers the bot's introduction.
 
     Diagnostics expose every link in the mic → STT → user-turn → LLM → TTS
     chain so a failed run is immediately attributable to a specific stage.
     """
-    state = {"stt_ready": False, "tts_ready": False, "triggered": False}
-
-    async def try_trigger():
-        if state["stt_ready"] and state["tts_ready"] and not state["triggered"]:
-            state["triggered"] = True
-            logger.info("Both services connected — triggering introduction")
-            await context_aggregator.user().push_context_frame()
+    rendezvous = ConnectionRendezvous(
+        callback=context_aggregator.user().push_context_frame
+    )
 
     @stt.event_handler("on_connected")
     async def _on_stt_connected(stt):
-        state["stt_ready"] = True
         logger.info("Soniox STT connected")
-        await try_trigger()
+        await rendezvous.stt_ready()
 
     @tts.event_handler("on_connected")
     async def _on_tts_connected(tts):
-        state["tts_ready"] = True
         logger.info("Soniox TTS connected")
-        await try_trigger()
+        await rendezvous.tts_ready()
 
     @context_aggregator.user().event_handler("on_user_mute_started")
     async def _on_user_mute_started(*_args):

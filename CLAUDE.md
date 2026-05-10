@@ -9,35 +9,48 @@ mic + speakers (no browser, no Daily/WebRTC).
 
 ```
 server/
-  local_bot.py          main entry point + mute/turn/lifecycle
-  voice_bot.py          shared STT/TTS/LLM/context construction
-  config.py             typed config dataclasses, YAML loader
-  config.example.yaml   example config (copy to config.yaml)
-  hotkey_interrupt.py   global hotkey (⌘⇧I)
+  local_bot.py            main entry point + mute/turn/lifecycle
+  voice_bot.py            shared STT/TTS/LLM/context construction
+  config.py               typed config dataclasses, YAML loader
+  config.example.yaml     example config (copy to config.yaml)
+  hotkey_interrupt.py     global hotkey (⌘⇧I)
+  connection_rendezvous.py  wait-for-both-connections coordinator
 
-  agent/                cognitive-stack prompt assembly
-    prompt_builder.py   multi-layer frozen system-prompt builder
-    memory_store.py     read-only USER.md / MEMORY.md snapshots
+  agent/                  cognitive-stack prompt assembly
+    prompt_builder.py     multi-layer frozen system-prompt builder
+    memory_store.py       read-only USER.md / MEMORY.md snapshots
 
-  tools/                LLM-callable tool implementations
-    __init__.py         re-exports REGISTRY, all tool functions
-    registry.py         BaseTool, ToolRegistry, REGISTRY, _make_handler
-    vision.py           image description fallback chain
-    mlx_vision.py       in-process MLX vision (internal adapter)
-    files.py            file ops + tool classes
-    desktop.py          macOS automation + tool classes
-    web.py              web search, weather demo + tool classes
-    memory.py           patch_memory tool (update USER.md / MEMORY.md)
+  tools/                  LLM-callable tool implementations
+    __init__.py           re-exports REGISTRY + compat callables
+    registry.py           BaseTool, ToolRegistry, REGISTRY, _make_handler
+    vision.py             image description fallback chain
+    mlx_vision.py         in-process MLX vision (internal adapter)
+    files.py              file ops + tool classes (impl in execute())
+    desktop.py            macOS automation + tool classes (impl in execute())
+    web.py                web search, weather demo + tool classes (impl in execute())
+    memory.py             patch_memory tool (update USER.md / MEMORY.md)
 
-  processors/           pipeline FrameProcessor stages
-    echo_suppressor.py  drops STT frames while bot speaks
-    wake_word.py        wake-word gate (asleep/awake state machine)
-    session_log.py      per-session JSONL logger + SessionLogProcessor
+  processors/             pipeline FrameProcessor stages
+    echo_suppressor.py    drops STT frames while bot speaks
+    wake_word.py          wake-word gate (asleep/awake state machine)
+    session_log.py        per-session JSONL logger + SessionLogProcessor
 
-  docs/adr/             architecture decision records
-  experiments/aec/      archived Speex AEC experiment
-  CONTEXT.md            domain glossary
-  .voice-agent/         agent data (SOUL.md, memories, skills) — gitignored
+  tests/                  tests
+    test_stt.py           Soniox STT WebSocket smoke test
+    test_tts.py           Soniox TTS WebSocket smoke test
+    test_tools.py         tool registry smoke test
+    unit/                 pytest unit tests for pure functions
+      test_echo_suppressor.py
+      test_wake_word.py
+      test_session_log.py
+      test_vision.py
+      test_files.py
+      test_connection_rendezvous.py
+
+  docs/adr/               architecture decision records
+  experiments/aec/        archived Speex AEC experiment
+  CONTEXT.md              domain glossary
+  .voice-agent/           agent data (SOUL.md, memories, skills) — gitignored
 ```
 
 ## Common commands
@@ -51,10 +64,8 @@ python local_bot.py                  # mic/speakers loop
 python tests/test_stt.py               # Soniox STT WebSocket smoke test (needs test_tts.wav)
 python tests/test_tts.py               # Soniox TTS WebSocket smoke test (writes test_tts.wav)
 python tests/test_tools.py             # Smoke-tests every tool in tools.REGISTRY
+python -m pytest tests/unit/ -v        # Pure-function unit tests (48 tests, no I/O)
 ```
-
-There is no pytest suite — `tests/test_stt.py` / `tests/test_tts.py` / `tests/test_tools.py` are
-run directly as scripts.
 
 ## Architecture
 

@@ -14,11 +14,18 @@ from tools.registry import BaseTool, REGISTRY
 
 
 def _agent_memories_dir() -> Path:
-    """Return the memories directory, respecting VOICE_AGENT_HOME if set."""
+    """Return the memories directory from VOICE_AGENT_HOME env var.
+
+    voice_bot.py sets VOICE_AGENT_HOME at import time; all other modules
+    read it as the single source of truth.
+    """
     home = os.environ.get("VOICE_AGENT_HOME")
-    if home:
-        return Path(home) / "memories"
-    return Path.cwd() / ".voice-agent" / "memories"
+    if not home:
+        raise RuntimeError(
+            "VOICE_AGENT_HOME is not set. voice_bot.py must be imported first "
+            "(it sets the env var at module level)."
+        )
+    return Path(home) / "memories"
 
 
 class PatchMemoryTool(BaseTool):

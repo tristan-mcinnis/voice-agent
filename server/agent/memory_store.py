@@ -13,8 +13,19 @@ from typing import Optional
 
 
 def _default_memories_path() -> Path:
-    """Default memories directory when no custom base_path is given."""
-    return Path.cwd() / ".voice-agent" / "memories"
+    """Return the memories directory from VOICE_AGENT_HOME env var.
+
+    voice_bot.py sets VOICE_AGENT_HOME at import time; all other modules
+    read it as the single source of truth (no Path.cwd() fallback).
+    """
+    import os
+    home = os.environ.get("VOICE_AGENT_HOME")
+    if not home:
+        raise RuntimeError(
+            "VOICE_AGENT_HOME is not set. voice_bot.py must be imported first "
+            "(it sets the env var at module level)."
+        )
+    return Path(home) / "memories"
 
 
 class MemoryStore:

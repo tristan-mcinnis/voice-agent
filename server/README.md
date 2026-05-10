@@ -28,10 +28,11 @@ cp config.example.yaml config.yaml  # or customise from the example
 ## Running
 
 ```bash
-python local_bot.py          # mic/speakers voice loop
+python local_bot.py            # mic/speakers voice loop
 python tests/test_stt.py       # Soniox STT WebSocket smoke test (needs test_tts.wav)
 python tests/test_tts.py       # Soniox TTS WebSocket smoke test (writes test_tts.wav)
 python tests/test_tools.py     # Smoke-tests every registered tool (pass --vision for captures)
+python -m pytest tests/unit/ -v  # Pure-function unit tests (48 tests, no I/O)
 ```
 
 ## Package layout
@@ -49,8 +50,8 @@ server/
     registry.py         #   BaseTool, ToolRegistry, REGISTRY, handler wiring
     vision.py           #   image description fallback chain (MLX → Kimi → …)
     mlx_vision.py       #   in-process MLX vision model loader (internal adapter)
-    files.py            #   file system ops: read, write, patch, move, copy, search
-    desktop.py          #   macOS automation: clipboard, browser, capture, terminal
+    files.py            #   file system ops (impl in BaseTool.execute())
+    desktop.py          #   macOS automation + capture path helpers
     web.py              #   web search (Serper), weather demo
 
   processors/           # pipeline FrameProcessor stages
@@ -58,11 +59,13 @@ server/
     wake_word.py        #   wake-word gate (asleep/awake state machine)
     session_log.py      #   per-session JSONL logger + SessionLogProcessor
 
-  tests/                # standalone smoke tests
-    test_stt.py         #   Soniox STT WebSocket test
-    test_tts.py         #   Soniox TTS WebSocket test
+  tests/                # tests
+    test_stt.py         #   Soniox STT WebSocket smoke test
+    test_tts.py         #   Soniox TTS WebSocket smoke test
     test_tools.py       #   tool registry smoke test
+    unit/               #   pytest unit tests for pure functions (48 tests)
 
+  connection_rendezvous.py  # dual-connection coordination for bot introduction
   docs/adr/             # architecture decision records
   experiments/aec/      # archived Speex AEC experiment (voice barge-in)
   logs/                 # session log output (gitignored)
@@ -100,7 +103,7 @@ Press **⌘⇧I** (anywhere on the desktop) to interrupt the bot mid-sentence. O
 
 ## Adding a tool
 
-Create a `BaseTool` subclass, decorate with `@REGISTRY.register`, and add it to the matching domain file in `tools/`:
+Create a `BaseTool` subclass with the full implementation in `execute()`. Decorate with `@REGISTRY.register` and add it to the matching domain file in `tools/`:
 
 ```python
 # In tools/desktop.py (macOS tools) or tools/files.py (file ops) or tools/web.py (network)
@@ -119,10 +122,11 @@ class MyTool(BaseTool):
     required = ["arg"]
 
     def execute(self, arg: str) -> str:
+        # Put the full implementation here — no separate helper function needed.
         return f"did a thing with {arg}"
 ```
 
-The tool is automatically wired to the LLM and appears in the capability summary (the `{tool_capabilities}` placeholder in the system prompt).
+The tool is automatically wired to the LLM and appears in the capability summary (the `{tool_capabilities}` placeholder in the system prompt). To make the tool callable as `tools.my_tool(...)` for backward compat, add a `my_tool = _compat("my_tool")` line in `tools/__init__.py`.
 
 ## Session logs
 

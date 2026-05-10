@@ -1,4 +1,8 @@
-"""Web and external-API tools — search, weather, and other network calls."""
+"""Web and external-API tools — search, weather, and other network calls.
+
+All implementations live in BaseTool.execute() methods — the canonical interface.
+Thin backward-compat callables are re-exported from __init__.py.
+"""
 
 from __future__ import annotations
 
@@ -7,45 +11,6 @@ import os
 import httpx
 
 from tools.registry import REGISTRY, BaseTool
-
-
-# ---------------------------------------------------------------------------
-# Web search via Serper
-# ---------------------------------------------------------------------------
-
-def web_search(query: str, max_results: int = 5) -> str:
-    """Google search via Serper. Returns formatted top results."""
-    api_key = os.getenv("SERPER_API_KEY")
-    if not api_key:
-        return "Web search unavailable: SERPER_API_KEY is not set."
-    try:
-        resp = httpx.post(
-            "https://google.serper.dev/search",
-            headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-            json={"q": query, "num": max_results},
-            timeout=10.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as exc:
-        return f"Web search failed: {exc}"
-
-    results = data.get("organic", [])[:max_results]
-    if not results:
-        return f"No results found for: {query}"
-    lines = [f"Top results for {query!r}:"]
-    for i, r in enumerate(results, 1):
-        lines.append(f"{i}. {r.get('title', '')} — {r.get('snippet', '')}")
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Demo: weather (dummy data)
-# ---------------------------------------------------------------------------
-
-def get_current_weather(location: str = "", format: str = "fahrenheit") -> dict:
-    """Dummy weather to demonstrate function calling end-to-end."""
-    return {"conditions": "nice", "temperature": "75"}
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +36,28 @@ class WebSearchTool(BaseTool):
     required = ["query"]
 
     def execute(self, query: str, max_results: int = 5) -> str:
-        return web_search(query, max_results)
+        api_key = os.getenv("SERPER_API_KEY")
+        if not api_key:
+            return "Web search unavailable: SERPER_API_KEY is not set."
+        try:
+            resp = httpx.post(
+                "https://google.serper.dev/search",
+                headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+                json={"q": query, "num": max_results},
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            return f"Web search failed: {exc}"
+
+        results = data.get("organic", [])[:max_results]
+        if not results:
+            return f"No results found for: {query}"
+        lines = [f"Top results for {query!r}:"]
+        for i, r in enumerate(results, 1):
+            lines.append(f"{i}. {r.get('title', '')} — {r.get('snippet', '')}")
+        return "\n".join(lines)
 
 
 @REGISTRY.register
@@ -94,4 +80,4 @@ class GetCurrentWeatherTool(BaseTool):
     required = ["location", "format"]
 
     def execute(self, location: str = "", format: str = "fahrenheit") -> dict:
-        return get_current_weather(location, format)
+        return {"conditions": "nice", "temperature": "75"}
