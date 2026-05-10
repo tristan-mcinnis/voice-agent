@@ -28,7 +28,8 @@ server/
     files.py              file ops + tool classes (impl in execute())
     desktop.py            macOS automation + tool classes (impl in execute())
     web.py                web search, weather demo + tool classes (impl in execute())
-    memory.py             patch_memory tool (update USER.md / MEMORY.md)
+    memory.py             memory tool (add/replace/list USER.md, MEMORY.md)
+    search_history.py     search past session logs for conversation recall
 
   processors/             pipeline FrameProcessor stages
     echo_suppressor.py    drops STT frames while bot speaks
@@ -160,10 +161,23 @@ Key facts:
   `.cursorrules`), the tool registry inventory, and a skills index. The stable
   prefix (Soul + Memory + User) stays warm in provider-side caches because it
   never changes mid-session.
-- **`patch_memory` tool.** The agent can call `patch_memory(file, insight)`
-  to append or update `USER.md` and `MEMORY.md`, closing the learning loop.
-  Updates are written to disk but only affect the *next* session — the current
-  session's prompt is a read-only snapshot.
+- **`memory` tool.** The agent manages two persistent memory files:
+  `USER.md` (user preferences, max 1,375 chars) and `MEMORY.md` (project
+  facts, max 2,200 chars). Entries are `§`-delimited for high-density recall.
+  Actions: `add` (with near-duplicate detection and pressure checks),
+  `replace` (substring match-and-swap), `list` (indexed inventory).
+  The `patch_memory` name is kept as a backward-compat alias in `__init__.py`.
+  Memory guidance instructions are injected into the system prompt by
+  `PromptBuilder` so the agent knows *how* to use its own memory.
+- **`search_history` tool.** Searches raw session JSONL logs for past
+  conversations. Use when the user asks "what did we talk about last time?"
+  — the curated memory files hold facts; this tool finds transcripts.
+- **Memory architecture.** Follows the Hermes agent pattern: frozen curated
+  facts (USER.md/MEMORY.md, loaded once per session for prefix caching)
+  + fluid session logs (JSONL, searchable) + optional pluggable providers.
+  The loop: agent observes a fact → calls `memory(action="add", …)` →
+  file written to disk → next session's `PromptBuilder` reads the frozen
+  snapshot → agent "just knows" without the user repeating themselves.
 - **`{tool_capabilities}` placeholder.** `REGISTRY.capabilities_summary()`
   produces a category-grouped tool inventory. When the fallback identity
   (config `system_prompt`) still contains this placeholder, the PromptBuilder

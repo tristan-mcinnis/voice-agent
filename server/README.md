@@ -53,6 +53,8 @@ server/
     files.py            #   file system ops (impl in BaseTool.execute())
     desktop.py          #   macOS automation + capture path helpers
     web.py              #   web search (Serper), weather demo
+    memory.py           #   memory tool — add/replace/list facts to USER.md / MEMORY.md
+    search_history.py   #   search past session JSONL logs for conversation recall
 
   processors/           # pipeline FrameProcessor stages
     echo_suppressor.py  #   drops STT frames while bot speaks (no-AEC workaround)

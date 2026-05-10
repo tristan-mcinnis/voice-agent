@@ -19,6 +19,7 @@ import tools.files     # noqa: F401
 import tools.desktop   # noqa: F401
 import tools.web       # noqa: F401
 import tools.memory    # noqa: F401
+import tools.search_history  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -68,3 +69,10 @@ read_terminal_output = _compat("read_terminal_output")
 # -- web.py compat -----------------------------------------------------------
 web_search = _compat("web_search")
 get_current_weather = _compat("get_current_weather")
+
+# -- memory.py compat --------------------------------------------------------
+memory = _compat("memory")
+patch_memory = _compat("memory")  # legacy name
+
+# -- search_history.py compat ------------------------------------------------
+search_history = _compat("search_history")

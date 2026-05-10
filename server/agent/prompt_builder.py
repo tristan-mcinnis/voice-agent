@@ -23,6 +23,36 @@ DEFAULT_AGENT_IDENTITY = """You are a friendly multimodal voice assistant.
 Your output will be spoken aloud — keep answers brief, conversational,
 and free of markdown or special characters."""
 
+# Injected after the Memory layer — teaches the agent how to use its own
+# memory tool. This is the "tool-use guidance" from the Hermes architecture.
+_MEMORY_GUIDANCE = """
+## Memory Tool Usage
+
+You have a `memory` tool that manages two persistent files:
+
+- **USER.md** — facts about the user (preferences, background, style). Max 1,375 characters.
+- **MEMORY.md** — project/environment facts (tech stack, decisions, state). Max 2,200 characters.
+
+Entries are separated by `§` delimiters. The actions are:
+
+- **list** — See current entries and their indices. Use this FIRST before adding or replacing, so you know what's already stored.
+- **add** — Append a new entry. The tool checks for near-duplicates and enforces the character limit. If memory pressure is reported, use `replace` to swap a less-important entry instead of adding.
+- **replace** — Update an existing entry by providing the `old_text` substring to match. The entry containing that text is replaced with your `content`.
+
+### When to use memory
+
+Record facts that should survive across sessions:
+- User preferences: "User prefers short answers without follow-up questions."
+- Project context: "Working on voice-agent repo — Pipecat bot with Soniox STT/TTS."
+- Decisions made: "Chose SQLite FTS5 for session search over Chroma."
+- Lessons learned: "DeepSeek's thinking mode adds 2s latency — keep disabled for voice."
+
+### When NOT to use memory
+
+- Transient facts about the current conversation only.
+- Information already present in the current session context.
+- Questions the user asked (those are in session logs via `search_history`)."""
+
 # Project-context discovery priority ladder. First match wins.
 _CONTEXT_PRIORITY = [
     ".voice-agent.md",
@@ -174,6 +204,11 @@ class PromptBuilder:
             parts.append(memory)
         if user:
             parts.append(user)
+
+        # Memory tool guidance — teaches the agent HOW to use its memory.
+        # Only inject when the memory tool is in the registry.
+        if self.registry is not None and "memory" in {t.name for t in self.registry.all()}:
+            parts.append(_MEMORY_GUIDANCE.strip())
 
         # Project-specific rules
         if context:
