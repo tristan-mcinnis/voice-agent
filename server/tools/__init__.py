@@ -52,3 +52,4 @@ from tools.web import get_current_weather, web_search  # noqa: F401
 import tools.files     # noqa: F401
 import tools.desktop   # noqa: F401
 import tools.web       # noqa: F401
+import tools.memory    # noqa: F401

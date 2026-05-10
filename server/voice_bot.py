@@ -15,6 +15,7 @@ plugs in by changing `llm.provider`, `llm.base_url`, `llm.model`,
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from openai.types.chat import (
@@ -33,6 +34,7 @@ from pipecat.services.soniox.tts import SonioxTTSService
 from pipecat.transcriptions.language import Language
 
 import tools as tools_module
+from agent.prompt_builder import PromptBuilder
 from config import Config, load_config, require_api_key
 
 
@@ -119,11 +121,17 @@ def build_components(
     schemas = tools_module.REGISTRY.register_handlers(llm, session_log=session_log)
     tools = ToolsSchema(standard_tools=schemas)
 
-    # If the prompt contains the `{tool_capabilities}` placeholder, fill it
-    # with the registry's category-grouped inventory so the LLM knows what
-    # tools exist without the prompt hard-coding their names.
-    system_prompt = cfg.system_prompt.replace(
-        "{tool_capabilities}", tools_module.REGISTRY.capabilities_summary()
+    # Assemble the frozen system prompt once per session.
+    # The PromptBuilder layers Soul → Memory → User → Rules → Tools → Skills
+    # so that the stable prefix stays warm in provider-side caches.
+    project_root = Path(__file__).parent.parent
+    prompt_builder = PromptBuilder(
+        registry=tools_module.REGISTRY,
+        default_identity=cfg.system_prompt,
+    )
+    system_prompt = prompt_builder.build(
+        user_input=initial_user_message or "",
+        cwd=project_root,
     )
     messages: list[ChatCompletionMessageParam] = [
         ChatCompletionSystemMessageParam(role="system", content=system_prompt),
