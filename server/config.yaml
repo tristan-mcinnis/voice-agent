@@ -70,7 +70,7 @@ vision:
     # producing visible content. Give them headroom.
     max_tokens: 400
     max_image_width: 1280
-    brevity_suffix: "Reply in at most two short sentences for spoken delivery."
+    brevity_suffix: "Reply with ONLY the final answer, in at most two short sentences for spoken delivery. Do not include reasoning, planning, or alternative phrasings."
     timeout: 60.0
 
 # Wake word — when enabled, the agent ignores all transcripts until it hears

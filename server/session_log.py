@@ -36,6 +36,7 @@ from typing import Any
 
 from loguru import logger
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
     TextFrame,
@@ -110,47 +111,62 @@ class SessionLogProcessor(FrameProcessor):
     aggregates per-turn text and emits `user-spoke` / `bot-spoke` events when
     the corresponding stop-speaking frame arrives.
 
-    Bot text dedup: Pipecat emits both incremental deltas *and* cumulative
-    snapshots as `TextFrame`s — sometimes per-token, sometimes per-sentence
-    snapshots that include all text-so-far. Naive concatenation gives
-    `"He I' I'm Your Your fri Your friend Your friendly..."`. We collapse
-    cumulative snapshots: if the new chunk starts with the last buffered
-    chunk, replace (it's a longer cumulative); otherwise append (new
-    sentence/segment).
+    Bot text dedup: Pipecat emits a mix of per-token deltas AND per-sentence
+    cumulative snapshots as `TextFrame`s. Naive concatenation gives gibberish
+    like `"I' I'm Your Your fri Your friend Your friendly..."`. We collect
+    every chunk between BotStartedSpeakingFrame and BotStoppedSpeakingFrame,
+    then keep only the "leaves" — chunks that no other chunk extends as a
+    longer prefix. That collapses each cumulative snapshot stream down to its
+    final form while preserving distinct sentences.
     """
 
     def __init__(self, session_log: SessionLog):
         super().__init__()
         self._log = session_log
-        self._user_buf: list[str] = []
-        self._bot_buf: list[str] = []
+        self._user_chunks: list[str] = []
+        self._bot_chunks: list[str] = []
 
     @staticmethod
-    def _add_chunk(buf: list[str], chunk: str) -> None:
-        if buf and chunk.startswith(buf[-1]):
-            buf[-1] = chunk
-        else:
-            buf.append(chunk)
+    def _leaves(chunks: list[str]) -> list[str]:
+        """Return chunks not strictly extended by any other chunk in the list."""
+        out: list[str] = []
+        for i, c in enumerate(chunks):
+            extended = any(
+                j != i and other != c and other.startswith(c)
+                for j, other in enumerate(chunks)
+            )
+            if not extended:
+                out.append(c)
+        # De-dupe identical chunks while preserving order.
+        seen: set[str] = set()
+        unique: list[str] = []
+        for c in out:
+            if c not in seen:
+                seen.add(c)
+                unique.append(c)
+        return unique
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, TranscriptionFrame):
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_chunks.clear()
+        elif isinstance(frame, TranscriptionFrame):
             text = (frame.text or "").strip()
             if text:
-                self._add_chunk(self._user_buf, text)
+                self._user_chunks.append(text)
         elif isinstance(frame, UserStoppedSpeakingFrame):
-            text = " ".join(self._user_buf).strip()
-            self._user_buf.clear()
+            text = " ".join(self._leaves(self._user_chunks)).strip()
+            self._user_chunks.clear()
             if text:
                 self._log.event("user-spoke", text=text)
         elif isinstance(frame, TextFrame):
             text = (frame.text or "").strip()
             if text:
-                self._add_chunk(self._bot_buf, text)
+                self._bot_chunks.append(text)
         elif isinstance(frame, BotStoppedSpeakingFrame):
-            text = " ".join(self._bot_buf).strip()
-            self._bot_buf.clear()
+            text = " ".join(self._leaves(self._bot_chunks)).strip()
+            self._bot_chunks.clear()
             if text:
                 self._log.event("bot-spoke", text=text)
 

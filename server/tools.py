@@ -105,6 +105,42 @@ def _downscaled_image_path(image_path: str, max_width: int) -> str:
         return image_path
 
 
+_REASONING_MARKERS = (
+    "wait,", "actually,", "let me think", "let's think", "let's keep",
+    "let's go", "possible answer", "or simpler", "or even shorter",
+    "the user", "the question", "i need to", "key elements",
+)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Drop chain-of-thought preamble from reasoning-model output.
+
+    Some reasoning models (kimi-k2.x at high load, etc.) dump their CoT into
+    `content` instead of `reasoning_content`. Heuristic: if reasoning markers
+    appear, take the last non-empty paragraph that doesn't itself contain
+    markers, and unwrap surrounding quotes.
+    """
+    if not text:
+        return text
+    lower = text.lower()
+    if not any(m in lower for m in _REASONING_MARKERS):
+        return text.strip()
+
+    # Walk lines in reverse and collect the longest contiguous tail of
+    # non-marker lines — that's typically the final answer.
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    tail: list[str] = []
+    for line in reversed(lines):
+        if any(m in line.lower() for m in _REASONING_MARKERS):
+            break
+        tail.append(line)
+    if tail:
+        result = " ".join(reversed(tail)).strip()
+    else:
+        result = lines[-1] if lines else text
+    return result.strip().strip('"').strip("'").strip()
+
+
 def _try_describe_with(provider, image_path: str, prompt: str) -> str | None:
     """Attempt one provider. Returns text on success, None on any failure."""
     full_prompt = (
@@ -121,10 +157,10 @@ def _try_describe_with(provider, image_path: str, prompt: str) -> str | None:
         small_path = _downscaled_image_path(image_path, provider.max_image_width)
         try:
             t0 = time.monotonic()
-            text = mlx_vision.describe(
+            text = _strip_reasoning(mlx_vision.describe(
                 provider.model, small_path, full_prompt,
                 max_tokens=provider.max_tokens,
-            )
+            ))
             elapsed = time.monotonic() - t0
             kb = os.path.getsize(small_path) // 1024
             logger.info(
@@ -183,7 +219,7 @@ def _try_describe_with(provider, image_path: str, prompt: str) -> str | None:
             # `content` empty and put the answer in `reasoning_content`. Fall
             # back to that if content is empty.
             reasoning = (getattr(msg, "reasoning_content", "") or "").strip()
-            text = content or reasoning
+            text = _strip_reasoning(content or reasoning)
             logger.info(
                 f"vision: {provider.name}/{provider.model} "
                 f"img_kb={len(b64)*3//4//1024} out_chars={len(text)} "

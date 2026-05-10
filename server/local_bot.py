@@ -27,6 +27,7 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
 
+from echo_suppressor import EchoSuppressor
 from local_audio import install_local_audio_lifecycle, local_user_aggregator_params
 from session_log import SessionLog, SessionLogProcessor
 from voice_bot import build_components
@@ -65,12 +66,14 @@ async def main():
 
     log_proc = SessionLogProcessor(session_log)
     wake_gate = WakeWordGate(components.config.wake_word)
+    echo_suppressor = EchoSuppressor(holdoff_seconds=1.0)
 
     pipeline = Pipeline(
         [
             transport.input(),
             vad,
             components.stt,
+            echo_suppressor,
             wake_gate,
             log_proc,
             components.context_aggregator.user(),
