@@ -1,5 +1,6 @@
 python-dotenv
-fastapi[all]
-uvicorn
-pipecat-ai[daily,cartesia,openai,silero,soniox]==0.0.77
-pipecatcloud
+pyyaml
+pipecat-ai[openai,silero,soniox,local]
+httpx
+pyperclip
+opencv-python

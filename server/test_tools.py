@@ -1,0 +1,154 @@
+"""Standalone smoke tests for tools.py.
+
+Calls each tool function directly (no Pipecat / no LLM) and prints a
+per-tool result with elapsed time. macOS-only tools short-circuit on
+other platforms.
+
+Usage:
+    source venv/bin/activate
+    python test_tools.py
+    python test_tools.py --webcam        # also exercise webcam (slow)
+    python test_tools.py --vision        # also exercise vision-described capture tools
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import time
+import traceback
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
+import tools
+
+
+PASS = "PASS"
+FAIL = "FAIL"
+SKIP = "SKIP"
+
+results: list[tuple[str, str, float, str]] = []
+
+
+def run(name: str, fn, *args, **kwargs) -> bool:
+    """Call `fn(*args, **kwargs)` and record outcome. Return True on PASS."""
+    print(f"\n--- {name} ".ljust(72, "-"))
+    t0 = time.monotonic()
+    try:
+        result = fn(*args, **kwargs)
+    except Exception as exc:
+        elapsed = time.monotonic() - t0
+        print(f"  RAISED ({elapsed:.2f}s): {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        results.append((name, FAIL, elapsed, str(exc)))
+        return False
+    elapsed = time.monotonic() - t0
+    if isinstance(result, dict):
+        preview = repr(result)
+    else:
+        text = str(result)
+        preview = text if len(text) <= 600 else text[:600] + f"... [+{len(text) - 600} chars]"
+    print(f"  ({elapsed:.2f}s) {preview}")
+    results.append((name, PASS, elapsed, preview[:120]))
+    return True
+
+
+def skip(name: str, reason: str) -> None:
+    print(f"\n--- {name} ".ljust(72, "-"))
+    print(f"  SKIP: {reason}")
+    results.append((name, SKIP, 0.0, reason))
+
+
+def main() -> int:
+    print("=" * 72)
+    print("VOICE-BOT TOOL SMOKE TESTS")
+    print("=" * 72)
+    print(f"Platform: {sys.platform}")
+    print(f"Python:   {sys.version.split()[0]}")
+    print(f"CWD:      {Path.cwd()}")
+
+    want_webcam = "--webcam" in sys.argv
+    want_vision = "--vision" in sys.argv
+
+    # --- Text ---------------------------------------------------------------
+    run("read_clipboard", tools.read_clipboard)
+    run("read_selected_text", tools.read_selected_text)
+    run("read_focused_input", tools.read_focused_input)
+
+    # --- File system --------------------------------------------------------
+    here = Path(__file__).resolve().parent
+    run("read_file (this script)", tools.read_file, str(__file__))
+    run("read_file (small max_bytes)", tools.read_file, str(__file__), 200)
+    run("read_file (nonexistent)", tools.read_file, "/no/such/path/__voice_bot_missing__")
+    run("read_file (directory)", tools.read_file, str(here))
+    run("list_folder (server dir)", tools.list_folder, str(here))
+    if (here / "assets").exists():
+        run("list_folder (recursive assets)", tools.list_folder, str(here / "assets"), True)
+    run("list_folder (nonexistent)", tools.list_folder, "/no/such/folder/__missing__")
+    run("read_finder_selection", tools.read_finder_selection)
+
+    # --- Browser ------------------------------------------------------------
+    run("read_browser_url", tools.read_browser_url)
+    run("read_browser_page_text", tools.read_browser_page_text)
+    run("list_browser_tabs", tools.list_browser_tabs)
+
+    # --- System -------------------------------------------------------------
+    run("get_frontmost_app", tools.get_frontmost_app)
+    run("list_running_apps", tools.list_running_apps)
+
+    # --- Terminal -----------------------------------------------------------
+    run("read_terminal_output", tools.read_terminal_output)
+
+    # --- Capture (vision) ---------------------------------------------------
+    if want_vision:
+        run("take_screenshot", tools.take_screenshot, "")
+        run("capture_frontmost_window", tools.capture_frontmost_window, "What window is this?")
+        run("capture_screen_region (top-left 400x400)", tools.capture_screen_region, 0, 0, 400, 400)
+        run("capture_display (1)", tools.capture_display, 1)
+    else:
+        skip("take_screenshot", "pass --vision to run (calls vision provider)")
+        skip("capture_frontmost_window", "pass --vision to run (calls vision provider)")
+        skip("capture_screen_region", "pass --vision to run (calls vision provider)")
+        skip("capture_display", "pass --vision to run (calls vision provider)")
+
+    if want_webcam:
+        run("capture_webcam", tools.capture_webcam, "")
+    else:
+        skip("capture_webcam", "pass --webcam to run")
+
+    # --- Web search ---------------------------------------------------------
+    if os.getenv("SERPER_API_KEY"):
+        run("web_search", tools.web_search, "Pipecat AI voice bot", 3)
+    else:
+        skip("web_search", "SERPER_API_KEY not set")
+
+    # --- Demo ---------------------------------------------------------------
+    run("get_current_weather", tools.get_current_weather, "San Francisco, CA", "fahrenheit")
+
+    # --- Registry sanity ----------------------------------------------------
+    print("\n" + "=" * 72)
+    print(f"TOOLS registry has {len(tools.TOOLS)} entries:")
+    for t in tools.TOOLS:
+        print(f"  - {t.schema.name}")
+
+    # --- Summary ------------------------------------------------------------
+    print("\n" + "=" * 72)
+    print("SUMMARY")
+    print("=" * 72)
+    p = sum(1 for _, status, *_ in results if status == PASS)
+    f = sum(1 for _, status, *_ in results if status == FAIL)
+    s = sum(1 for _, status, *_ in results if status == SKIP)
+    print(f"  {p} pass, {f} fail, {s} skip   (out of {len(results)})")
+    if f:
+        print("\nFailures:")
+        for name, status, _, msg in results:
+            if status == FAIL:
+                print(f"  - {name}: {msg}")
+    return 0 if f == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

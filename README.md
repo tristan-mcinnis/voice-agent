@@ -1,159 +1,87 @@
-# Real-Time VoiceBot with Soniox Speech-to-Text & Pipecat Cloud
+# Real-Time VoiceBot — Soniox STT/TTS + DeepSeek + Pipecat (local)
 
-This project showcases a full-stack real-time voice agent that leverages Soniox’s real-time speech-to-text (STT) for live audio transcription, integrated with Pipecat. It features a Next.js client for seamless interaction with a Python-based Pipecat bot server, using Daily.co’s WebRTC for low-latency audio streaming.
+A multimodal local voice agent built on Pipecat. Soniox handles real-time
+speech-to-text and text-to-speech; DeepSeek (`deepseek-v4-flash` with thinking
+disabled) is the LLM. Audio runs over your laptop's mic and speakers — no
+browser, no WebRTC.
 
-<img src="image.png" width="420px">
+The bot ships with a wake-word gate ("hey ava" by default), plus a rich tool
+surface (clipboard, file/folder reads, Finder & browser scraping via
+AppleScript, screenshot / window / region / display / webcam capture, terminal
+output, web search) and a vision-describer fallback chain (local MLX
+`Qwen3-VL-2B` first, Kimi/Moonshot `kimi-k2.6` fallback). All providers,
+models, voices, the wake word, and the system prompt live in
+`server/config.yaml` — no Python edits to swap them.
 
-## Project Overview
-
-- **Server**: Python-based Pipecat bot with video/audio processing capabilities
-- **Client**: Next.js TypeScript web application using the Pipecat React & JS SDKs
-- **Infrastructure**: Deployable to Pipecat Cloud (server) and Vercel (client)
-
-> See the [simple-chatbot example](https://github.com/pipecat-ai/pipecat/tree/main/examples/simple-chatbot) from Pipecat with different client and server implementations.
-
-## Quick Start (Local run)
-
-### 1. Server Setup
-
-Navigate to the server directory:
+## Quick Start
 
 ```bash
 cd server
-```
-
-Create and activate a virtual environment:
-
-```bash
-python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-```
-
-Install requirements:
-
-```bash
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-```
-
-Copy env.example to .env and add your API keys:
-
-```bash
 cp env.example .env
-# Edit .env to add SONIOX_API_KEY, OPENAI_API_KEY, CARTESIA_API_KEY, and DAILY_API_KEY
+# Required: SONIOX_API_KEY, DEEPSEEK_API_KEY
+# Vision:   MOONSHOT_API_KEY   (fallback after local MLX; required off Apple Silicon)
+# Optional: OPENAI_API_KEY (alt vision), SERPER_API_KEY (web_search),
+#           VOICE_BOT_LOG_DIR (per-session JSONL log dir)
+
+python local_bot.py
 ```
 
-Run the server locally to test before deploying:
+Standalone smoke tests:
 
 ```bash
-python server.py
+python test_tts.py    # writes test_tts.wav (Soniox TTS WebSocket)
+python test_stt.py    # transcribes test_tts.wav (run test_tts.py first)
+python test_tools.py  # exercises every tool in tools.TOOLS
 ```
 
-> You can join this client via Daily's Prebuilt UI at http://localhost:7860 or follow step 2 to join from the demo voice bot web UI.
+## Wake word
 
-### 2. Client Setup
+By default the agent starts **awake** (so the intro plays), then sleeps after
+30 seconds of user silence. While asleep, transcripts are dropped and the LLM
+is never invoked. Say **"hey ava"** to wake it; it replies "Ready." and resumes
+listening normally. Say **"go to sleep"** to put it back to sleep manually.
 
-In a separate terminal, navigate to the client directory:
+Tune in `config.yaml`:
 
-```bash
-cd client-react
+```yaml
+wake_word:
+  enabled: true
+  phrase: "hey ava"
+  sleep_phrase: "go to sleep"
+  idle_timeout_seconds: 30
+  ack_text: "Ready."
+  start_awake: true
 ```
 
-Install dependencies:
+Set `enabled: false` to disable the gate entirely; set `start_awake: false` to
+require the wake word for the very first turn.
 
-```bash
-npm install
-```
+## Configuration
 
-Create `.env.local` file and add your `PIPECAT_CLOUD_API_KEY`:
-
-```bash
-cp env.local.example .env.local
-```
-
-> Create a Pipecat Cloud API public key using the dashboard. This key is still a secret, so protect it. It's meant to launch your Pipecat apps.
-
-Run the client app:
-
-```bash
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) to interact with your agent through the Next.js client.
-
-## Deployment
-
-> See the [Pipecat Cloud Quickstart](https://docs.pipecat.daily.co/quickstart) for a complete walkthrough.
-
-### Deploy Server to Pipecat Cloud
-
-1. Install the Pipecat Cloud CLI:
-
-```bash
-pip install pipecatcloud
-```
-
-2. Authenticate:
-
-```bash
-pcc auth login
-```
-
-3. Build and push your Docker image:
-
-```bash
-cd server
-chmod +x build.sh
-./build.sh
-```
-
-> IMPORTANT: Before running this build script, you need to add your DOCKER_USERNAME
-
-4. Create a secret set for your API keys:
-
-```bash
-pcc secrets set simple-voicebot-secrets --file .env
-```
-
-5. Deploy to Pipecat Cloud:
-
-```bash
-pcc deploy
-```
-
-> IMPORTANT: Before deploying, you need to add your Docker Hub username
-
-### Deploy Client to Vercel
-
-1. Push your Next.js client to GitHub
-
-2. Connect your GitHub repository to Vercel
-
-3. Add your `PIPECAT_CLOUD_API_KEY` and `AGENT_NAME` environment variable in Vercel
-
-4. Deploy with the Vercel dashboard or CLI
+Everything swap-able lives in `server/config.yaml`: LLM provider/model/extras,
+STT/TTS provider + voice, the ordered `vision:` fallback chain (local MLX →
+Kimi by default), wake-word settings, and the system prompt. Secrets stay in
+`.env` and are referenced by name (e.g. `api_key_env: DEEPSEEK_API_KEY`). To
+swap LLM provider, edit the YAML and add the matching env var to `.env` — no
+Python changes needed.
 
 ## Project Structure
 
 ```
-pipecat-cloud-simple-voicebot/
-├── client-react/            # Next.js client application
-│   ├── src/
-│   │   ├── app/            # Next.js app routes
-│   │   │   └── api/
-│   │   │       └── connect/ # API endpoint for Daily.co connection
-│   │   ├── components/     # React components
-│   │   └── providers/      # React providers including RTVIProvider
-│   ├── package.json
-│   └── README.md          # Client-specific documentation
-│
-└── server/                # Pipecat bot server
-    ├── assets/            # Robot animation frames
-    ├── bot.py             # The Pipecat pipeline implementation
-    ├── Dockerfile         # For building the container image
-    ├── build.sh           # Script for building and pushing Docker image
-    ├── requirements.txt   # Python dependencies
-    ├── pcc-deploy.toml    # Pipecat Cloud deployment config
-    ├── runner.py          # Local dev only: A runner that launches
-    ├── server.py          # Local dev only: A FastAPI server to handle inbound requests
-    └── README.md          # Server-specific documentation
+server/
+├── local_bot.py        # Entry point: mic in, speakers out
+├── voice_bot.py        # Shared STT+TTS+LLM+tools builder
+├── local_audio.py      # Mic/speakers concerns: mute strategies, turn strategies
+├── wake_word.py        # Wake-word gate (FrameProcessor)
+├── tools.py            # Tool registry (clipboard, files, browser, capture, search, ...)
+├── config.py           # Loads config.yaml into typed dataclasses
+├── config.yaml         # Provider/model/voice/prompt/vision/wake-word config
+├── mlx_vision.py       # In-process MLX vision describer (Apple-Silicon only)
+├── session_log.py      # Per-session kebab-case JSONL event logger
+├── test_stt.py         # Soniox STT smoke test
+├── test_tts.py         # Soniox TTS smoke test
+├── test_tools.py       # Tool registry smoke test
+└── requirements.txt
 ```

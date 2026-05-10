@@ -1,0 +1,102 @@
+# Voice-bot runtime configuration.
+#
+# Swap providers/models here without touching code. Secrets stay in .env;
+# this file references them by name (e.g. `api_key_env: DEEPSEEK_API_KEY`).
+#
+# Used by voice_bot.build_components() and tools._describe_image().
+
+llm:
+  # OpenAI-compatible chat completions endpoint. Anything that speaks the
+  # OpenAI v1 chat schema works here — DeepSeek, Kimi/Moonshot, OpenAI itself.
+  provider: deepseek
+  base_url: https://api.deepseek.com/v1
+  model: deepseek-v4-flash
+  api_key_env: DEEPSEEK_API_KEY
+  # Provider-specific extras merged into every completion call. For DeepSeek,
+  # `thinking: disabled` skips the reasoning pass — required for voice latency.
+  extra:
+    extra_body:
+      thinking:
+        type: disabled
+
+stt:
+  provider: soniox
+  api_key_env: SONIOX_API_KEY
+  language_hints: [en, es, ja, zh]
+
+tts:
+  provider: soniox
+  api_key_env: SONIOX_API_KEY
+  voice: Emma   # Females: Maya, Nina, Emma, Claire, Grace, Mina.
+                # Males:   Daniel, Noah, Jack, Adrian, Owen, Kenji.
+
+# Vision describer chain for take_screenshot / capture_webcam.
+# A list of providers tried in order — first one that returns text wins.
+# A provider is skipped if its api_key_env is set but unset in env, or if its
+# call raises any error (timeout, 503, model crash, overload). Set to an empty
+# list `[]` or remove the key to disable vision entirely.
+#
+# Each entry must speak the OpenAI image_url content-block format.
+# DeepSeek's hosted chat API does not — verified empirically.
+# Kimi/Moonshot's `moonshot-v1-*-vision-preview` models do.
+# LM Studio works for any model that has a vision projector loaded
+# (e.g. Qwen2.5-VL-*-Instruct, Gemma-3-*-IT-VL). gemma-4-e2b/e4b are TEXT-ONLY
+# and crash on image input.
+vision:
+  # Primary: in-process MLX. Loads from ~/.cache/huggingface (auto-downloads
+  # the first time). No LM Studio, no HTTP, no rate limits. Apple-Silicon-only.
+  # Other small picks for `model:`:
+  #   mlx-community/Qwen3-VL-4B-Instruct-4bit       (better quality, ~3GB)
+  #   mlx-community/Qwen2.5-VL-3B-Instruct-4bit     (proven, ~2GB)
+  #   mlx-community/Qwen2-VL-2B-Instruct-4bit       (smallest, fastest)
+  - name: mlx-local
+    kind: mlx
+    model: mlx-community/Qwen3-VL-2B-Instruct-4bit
+    max_tokens: 150
+    max_image_width: 1024
+    brevity_suffix: "Reply in at most two short sentences."
+
+  # Fallback: Kimi/Moonshot vision via kimi-k2.6 (a reasoning model).
+  # Empirically faster than moonshot-v1-*-vision-preview and currently more
+  # available (the v1-vision-preview line keeps 429-ing under load).
+  # Note: k2.6 is a reasoning model — answers may arrive in `reasoning_content`
+  # rather than `content`. The code in tools._try_describe_with handles both.
+  - name: kimi
+    kind: openai
+    base_url: https://api.moonshot.cn/v1
+    model: kimi-k2.6
+    api_key_env: MOONSHOT_API_KEY
+    # Reasoning models burn output tokens on internal chain-of-thought before
+    # producing visible content. Give them headroom.
+    max_tokens: 400
+    max_image_width: 1280
+    brevity_suffix: "Reply in at most two short sentences for spoken delivery."
+    timeout: 60.0
+
+# Wake word — when enabled, the agent ignores all transcripts until it hears
+# `phrase`. On wake, it speaks `ack_text`, then behaves normally until either
+# `sleep_phrase` is heard or no user speech arrives for `idle_timeout_seconds`.
+# Set `start_awake: false` to require the wake word for the very first turn.
+wake_word:
+  enabled: true
+  phrase: "hey ava"
+  sleep_phrase: "go to sleep"
+  idle_timeout_seconds: 30
+  ack_text: "Ready."
+  start_awake: true
+
+# System prompt the LLM sees at conversation start. Swap freely.
+system_prompt: |
+  You are a friendly multimodal voice assistant.
+  Your output will be spoken aloud — keep answers brief, conversational,
+  and free of markdown or special characters.
+  You can call tools to interact with the user's machine when useful:
+  read_clipboard, read_selected_text, read_focused_input;
+  read_file, list_folder, read_finder_selection;
+  read_browser_url, read_browser_page_text, list_browser_tabs;
+  take_screenshot, capture_frontmost_window, capture_screen_region,
+  capture_display, capture_webcam;
+  get_frontmost_app, list_running_apps, read_terminal_output;
+  and web_search. Use them only when the user's request actually needs them.
+  When the conversation starts, say exactly "Hi, I'm here." and stop —
+  do not introduce yourself, do not list capabilities, just wait for the user.
