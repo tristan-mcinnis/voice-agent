@@ -47,5 +47,8 @@ pnpm-debug.log*
 *.swo
 .DS_Store
 
+# Config — tracked example only; real config is local
+config.yaml
+
 # Project specific
 runpod.toml
