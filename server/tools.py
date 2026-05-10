@@ -18,9 +18,9 @@ import base64
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -29,8 +29,19 @@ from loguru import logger
 
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 
-SCREENSHOT_PATH = os.path.join(tempfile.gettempdir(), "voice_bot_screenshot.png")
-WEBCAM_PATH = os.path.join(tempfile.gettempdir(), "voice_bot_webcam.jpg")
+
+def _captures_dir() -> Path:
+    """Where capture tools write their images. Mirrors session_log's VOICE_BOT_LOG_DIR."""
+    base = Path(os.getenv("VOICE_BOT_LOG_DIR", "logs"))
+    d = base / "captures"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _capture_path(kind: str, ext: str = "jpg") -> str:
+    """Build a timestamped path under logs/captures/, e.g. screenshot-2026-05-10-12-54-03.jpg."""
+    ts = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    return str(_captures_dir() / f"{kind}-{ts}.{ext}")
 
 
 # ---------------------------------------------------------------------------
@@ -284,49 +295,57 @@ def _no_vision_message() -> str:
     )
 
 
-def take_screenshot(question: str = "") -> str:
-    """Capture the primary display, optionally describe it, return a sentence for the LLM."""
+def take_screenshot(question: str = "") -> dict:
+    """Capture the primary display, optionally describe it.
+
+    Saves a JPEG (q=85) to logs/captures/screenshot-<ts>.jpg. Returns a dict
+    with `result` (sentence for the LLM) and `image_path` so the session log
+    can correlate the capture with the turn.
+    """
+    path = _capture_path("screenshot")
     try:
         from PIL import ImageGrab
 
         img = ImageGrab.grab()
-        img.convert("RGB").save(SCREENSHOT_PATH, "PNG")
+        img.convert("RGB").save(path, "JPEG", quality=85)
     except Exception as exc:
-        return f"Screenshot capture failed: {exc}"
+        return {"result": f"Screenshot capture failed: {exc}"}
 
     prompt = question.strip() or "Briefly describe what's on this screen."
-    description = _describe_image(SCREENSHOT_PATH, prompt)
+    description = _describe_image(path, prompt)
     if description:
-        return f"Screenshot taken. {description}"
-    return _no_vision_message()
+        return {"result": f"Screenshot taken. {description}", "image_path": path}
+    return {"result": _no_vision_message(), "image_path": path}
 
 
-def capture_webcam(question: str = "") -> str:
+def capture_webcam(question: str = "") -> dict:
     """Capture one frame from the default webcam, optionally describe it."""
     try:
         import cv2
     except ImportError:
-        return "Webcam tool unavailable: opencv-python is not installed."
+        return {"result": "Webcam tool unavailable: opencv-python is not installed."}
 
+    path = _capture_path("webcam")
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         cap.release()
-        return "Webcam capture failed: could not open default camera."
+        return {"result": "Webcam capture failed: could not open default camera."}
     try:
         # First frame is often blank/dark on macOS — read a couple to let exposure settle.
         for _ in range(3):
             ok, frame = cap.read()
         if not ok or frame is None:
-            return "Webcam capture failed: no frame received."
-        cv2.imwrite(WEBCAM_PATH, frame)
+            return {"result": "Webcam capture failed: no frame received."}
+        # cv2 infers JPEG from the .jpg extension; quality default is 95.
+        cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
     finally:
         cap.release()
 
     prompt = question.strip() or "Briefly describe what you see in this webcam image."
-    description = _describe_image(WEBCAM_PATH, prompt)
+    description = _describe_image(path, prompt)
     if description:
-        return f"Webcam image captured. {description}"
-    return _no_vision_message()
+        return {"result": f"Webcam image captured. {description}", "image_path": path}
+    return {"result": _no_vision_message(), "image_path": path}
 
 
 # ---------------------------------------------------------------------------
@@ -376,10 +395,6 @@ def get_current_weather(location: str = "", format: str = "fahrenheit") -> dict:
 # non-Darwin platforms so the cloud bot (Linux container) can still register
 # them — the LLM just sees an explanatory error and adapts.
 # ---------------------------------------------------------------------------
-
-WINDOW_PATH = os.path.join(tempfile.gettempdir(), "voice_bot_window.png")
-REGION_PATH = os.path.join(tempfile.gettempdir(), "voice_bot_region.png")
-DISPLAY_PATH = os.path.join(tempfile.gettempdir(), "voice_bot_display.png")
 
 # Apps we know how to query for URL / page-text / tabs.
 _BROWSERS = {
@@ -714,10 +729,10 @@ def list_browser_tabs() -> str:
 # Window / region / display capture (vision-described)
 # ---------------------------------------------------------------------------
 
-def capture_frontmost_window(question: str = "") -> str:
+def capture_frontmost_window(question: str = "") -> dict:
     """Capture the bounds of the frontmost window via screencapture and describe it."""
     if not _is_macos():
-        return _macos_only_msg("Window capture")
+        return {"result": _macos_only_msg("Window capture")}
 
     script = '''
     tell application "System Events"
@@ -732,66 +747,71 @@ def capture_frontmost_window(question: str = "") -> str:
         bounds = _osascript(script).split()
         x, y, w, h = bounds
     except Exception as exc:
-        return f"Could not get frontmost window bounds: {exc}"
+        return {"result": f"Could not get frontmost window bounds: {exc}"}
 
+    path = _capture_path("window")
     try:
-        # `-x` silences the camera-shutter sound; `-R` is non-interactive region.
+        # `-x` silences the camera-shutter sound; `-R` is non-interactive region;
+        # `-t jpg` saves JPEG (Retina PNGs are 5–15MB and slow to encode).
         subprocess.run(
-            ["screencapture", "-x", "-R", f"{x},{y},{w},{h}", WINDOW_PATH],
+            ["screencapture", "-x", "-t", "jpg", "-R", f"{x},{y},{w},{h}", path],
             check=True, capture_output=True, timeout=10.0,
         )
     except Exception as exc:
-        return f"Window capture failed: {exc}"
+        return {"result": f"Window capture failed: {exc}"}
 
     prompt = question.strip() or "Briefly describe what's in this window."
-    description = _describe_image(WINDOW_PATH, prompt)
+    description = _describe_image(path, prompt)
     if description:
-        return f"Window captured. {description}"
-    return _no_vision_message()
+        return {"result": f"Window captured. {description}", "image_path": path}
+    return {"result": _no_vision_message(), "image_path": path}
 
 
 def capture_screen_region(
     x: int, y: int, width: int, height: int, question: str = ""
-) -> str:
+) -> dict:
     """Capture a rectangular region of the screen and describe it."""
     if not _is_macos():
-        return _macos_only_msg("Region capture")
+        return {"result": _macos_only_msg("Region capture")}
+    path = _capture_path("region")
     try:
         subprocess.run(
-            ["screencapture", "-x", "-R", f"{x},{y},{width},{height}", REGION_PATH],
+            ["screencapture", "-x", "-t", "jpg", "-R",
+             f"{x},{y},{width},{height}", path],
             check=True, capture_output=True, timeout=10.0,
         )
     except Exception as exc:
-        return f"Region capture failed: {exc}"
+        return {"result": f"Region capture failed: {exc}"}
 
     prompt = question.strip() or "Briefly describe what's in this screen region."
-    description = _describe_image(REGION_PATH, prompt)
+    description = _describe_image(path, prompt)
     if description:
-        return f"Region captured. {description}"
-    return _no_vision_message()
+        return {"result": f"Region captured. {description}", "image_path": path}
+    return {"result": _no_vision_message(), "image_path": path}
 
 
-def capture_display(display: int = 1, question: str = "") -> str:
+def capture_display(display: int = 1, question: str = "") -> dict:
     """Capture an entire display by index (1 = primary) and describe it.
 
     Note: this is *monitors*, not Spaces. macOS doesn't expose virtual desktops
     to screencapture; only physical displays.
     """
     if not _is_macos():
-        return _macos_only_msg("Display capture")
+        return {"result": _macos_only_msg("Display capture")}
+    path = _capture_path(f"display{display}")
     try:
         subprocess.run(
-            ["screencapture", "-x", f"-D{display}", DISPLAY_PATH],
+            ["screencapture", "-x", "-t", "jpg", f"-D{display}", path],
             check=True, capture_output=True, timeout=10.0,
         )
     except Exception as exc:
-        return f"Display capture failed: {exc}"
+        return {"result": f"Display capture failed: {exc}"}
 
     prompt = question.strip() or f"Briefly describe what's on display {display}."
-    description = _describe_image(DISPLAY_PATH, prompt)
+    description = _describe_image(path, prompt)
     if description:
-        return f"Display {display} captured. {description}"
-    return _no_vision_message()
+        return {"result": f"Display {display} captured. {description}", "image_path": path}
+    return {"result": _no_vision_message(), "image_path": path}
 
 
 # ---------------------------------------------------------------------------
