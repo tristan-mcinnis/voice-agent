@@ -66,11 +66,9 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
 )
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
-from echo_suppressor import EchoSuppressor
+from processors import EchoSuppressor, SessionLog, SessionLogProcessor, WakeWordGate
 from hotkey_interrupt import install_interrupt_hotkey
-from session_log import SessionLog, SessionLogProcessor
 from voice_bot import build_components
-from wake_word import WakeWordGate
 
 load_dotenv(override=True)
 

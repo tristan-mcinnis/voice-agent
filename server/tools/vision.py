@@ -138,7 +138,7 @@ def try_describe_with(provider: Any, image_path: str, prompt: str) -> str | None
 
     if provider.kind == "mlx":
         try:
-            import mlx_vision
+            import tools.mlx_vision as mlx_vision
         except ImportError:
             logger.info(f"vision: skipping {provider.name} — mlx_vlm not installed")
             return None
