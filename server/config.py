@@ -71,6 +71,15 @@ class VisionProvider:
 
 
 @dataclass(frozen=True)
+class ShortcatConfig:
+    """ShortCat command-palette driver. See ADR-0005."""
+    enabled: bool = False
+    hotkey: str = "cmd+alt+space"   # pyautogui combo string
+    palette_delay_ms: int = 250     # wait after hotkey before typing
+    settle_ms: int = 400            # wait after Enter before returning
+
+
+@dataclass(frozen=True)
 class WakeWordConfig:
     enabled: bool = False
     phrase: str = "hey ava"
@@ -89,6 +98,7 @@ class Config:
     vision: list[VisionProvider]
     system_prompt: str
     wake_word: WakeWordConfig
+    shortcat: ShortcatConfig
 
 
 @lru_cache(maxsize=1)
@@ -105,6 +115,9 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
     wake_word_raw = data.get("wake_word") or {}
     wake_word = WakeWordConfig(**wake_word_raw)
 
+    shortcat_raw = data.get("shortcat") or {}
+    shortcat = ShortcatConfig(**shortcat_raw)
+
     return Config(
         llm=LLMConfig(**data["llm"]),
         stt=STTConfig(**data["stt"]),
@@ -112,6 +125,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
         vision=vision,
         system_prompt=data["system_prompt"].strip(),
         wake_word=wake_word,
+        shortcat=shortcat,
     )
 
 

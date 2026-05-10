@@ -79,6 +79,7 @@ type_text = _compat("type_text")
 press_key = _compat("press_key")
 scroll = _compat("scroll")
 mouse_move = _compat("mouse_move")
+shortcat_click = _compat("shortcat_click")
 
 # -- grounding_vision.py compat ----------------------------------------------
 find_on_screen = _compat("find_on_screen")

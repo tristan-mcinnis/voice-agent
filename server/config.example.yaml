@@ -73,6 +73,18 @@ vision:
     brevity_suffix: "Reply with ONLY the final answer, in at most two short sentences for spoken delivery. Do not include reasoning, planning, or alternative phrasings."
     timeout: 60.0
 
+# ShortCat command-palette driver — label-based UI navigation as a faster,
+# more reliable alternative to pixel-coordinate clicks. See ADR-0005.
+# Requires the Shortcat.app (https://shortcat.app/) installed and granted
+# Accessibility permission. Set the activation hotkey here to match what you
+# configured in ShortCat preferences (default ⌘⌥Space, since ⌘⇧Space conflicts
+# with Spotlight).
+shortcat:
+  enabled: true
+  hotkey: "cmd+alt+space"
+  palette_delay_ms: 250
+  settle_ms: 400
+
 # Wake word — when enabled, the agent ignores all transcripts until it hears
 # `phrase`. On wake, it speaks `ack_text`, then behaves normally until either
 # `sleep_phrase` is heard or no user speech arrives for `idle_timeout_seconds`.

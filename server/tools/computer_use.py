@@ -633,6 +633,94 @@ class ScrollTool(BaseTool):
 
 
 @REGISTRY.register
+class ShortcatClickTool(BaseTool):
+    name = "shortcat_click"
+    category = "input"
+    speak_text = "Clicking."
+    description = (
+        "Click a UI element by its visible label using ShortCat — a macOS "
+        "command palette that indexes the Accessibility tree of the FRONTMOST "
+        "app. Press the activation hotkey, type the label, hit Enter; ShortCat "
+        "fuzzy-matches and clicks. Often more reliable than list_ui_elements + "
+        "click_element for menu items, toolbar buttons, and sidebar entries — "
+        "especially in apps where AX enumeration is shallow. Requires "
+        "Shortcat.app installed (https://shortcat.app/) and `shortcat.enabled: "
+        "true` in config.yaml."
+    )
+    parameters = {
+        "label": {
+            "type": "string",
+            "description": (
+                "Visible label or substring of the target element — "
+                "e.g. 'Reload', 'New Document', 'Downloads', 'Wi-Fi'. "
+                "Pick the shortest unambiguous prefix."
+            ),
+        },
+        "confirm": {
+            "type": "boolean",
+            "description": (
+                "Required true to override the sensitive-app safety gate. "
+                "Only set after the user has verbally confirmed."
+            ),
+        },
+    }
+    required = ["label"]
+
+    def execute(self, label: str, confirm: bool = False) -> str:
+        if not _is_macos():
+            return _macos_only("shortcat_click")
+        gate = _refuse_if_sensitive(f"shortcat_click {label!r}", confirm)
+        if gate:
+            return gate
+
+        # Lazy config import — keeps this tool's dependencies isolated and
+        # leaves the rest of the registry usable when config.yaml is absent.
+        try:
+            from config import load_config
+            cfg = load_config().shortcat
+        except Exception as exc:
+            return f"shortcat config unavailable: {type(exc).__name__}: {exc}"
+        if not cfg.enabled:
+            return (
+                "shortcat is disabled in config.yaml. Set "
+                "`shortcat.enabled: true` to use this tool."
+            )
+
+        # Make sure Shortcat.app is running — its hotkey is a no-op otherwise.
+        try:
+            subprocess.run(
+                ["open", "-a", "Shortcat"], check=False,
+                capture_output=True, timeout=5.0,
+            )
+        except Exception:
+            pass
+
+        try:
+            pg = _import_pyautogui()
+        except ImportError as exc:
+            return str(exc)
+
+        parts = [k.strip().lower() for k in cfg.hotkey.split("+") if k.strip()]
+        if not parts:
+            return f"shortcat hotkey {cfg.hotkey!r} is empty in config."
+
+        try:
+            if len(parts) == 1:
+                pg.press(parts[0])
+            else:
+                pg.hotkey(*parts)
+            time.sleep(cfg.palette_delay_ms / 1000.0)
+            pg.typewrite(label, interval=0.025)
+            time.sleep(0.15)
+            pg.press("enter")
+        except Exception as exc:
+            return f"shortcat dispatch failed: {type(exc).__name__}: {exc}"
+
+        time.sleep(cfg.settle_ms / 1000.0)
+        return f"Dispatched ShortCat click for {label!r}."
+
+
+@REGISTRY.register
 class MouseMoveTool(BaseTool):
     name = "mouse_move"
     category = "input"
