@@ -35,6 +35,10 @@ class BaseTool:
     # Coarse grouping for the auto-generated capability summary in the system
     # prompt. Pick one of: input, files, browser, vision, system, web, demo.
     category: str = "misc"
+    # Optional usage guidance injected into the system prompt. The tool author
+    # owns this — PromptBuilder collects it from the registry rather than
+    # hard-coding tool-specific prose. Set to None for no guidance.
+    guidance: Optional[str] = None
 
     def execute(self, **kwargs: Any) -> Any:
         raise NotImplementedError

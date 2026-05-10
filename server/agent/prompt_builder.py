@@ -17,41 +17,12 @@ from pathlib import Path
 from typing import Optional
 
 from agent.memory_store import MemoryStore
+from agent.paths import agent_home as _agent_home, skills_dir as _skills_dir
 
 # Fallback identity when SOUL.md is missing or empty.
 DEFAULT_AGENT_IDENTITY = """You are a friendly multimodal voice assistant.
 Your output will be spoken aloud — keep answers brief, conversational,
 and free of markdown or special characters."""
-
-# Injected after the Memory layer — teaches the agent how to use its own
-# memory tool. This is the "tool-use guidance" from the Hermes architecture.
-_MEMORY_GUIDANCE = """
-## Memory Tool Usage
-
-You have a `memory` tool that manages two persistent files:
-
-- **USER.md** — facts about the user (preferences, background, style). Max 1,375 characters.
-- **MEMORY.md** — project/environment facts (tech stack, decisions, state). Max 2,200 characters.
-
-Entries are separated by `§` delimiters. The actions are:
-
-- **list** — See current entries and their indices. Use this FIRST before adding or replacing, so you know what's already stored.
-- **add** — Append a new entry. The tool checks for near-duplicates and enforces the character limit. If memory pressure is reported, use `replace` to swap a less-important entry instead of adding.
-- **replace** — Update an existing entry by providing the `old_text` substring to match. The entry containing that text is replaced with your `content`.
-
-### When to use memory
-
-Record facts that should survive across sessions:
-- User preferences: "User prefers short answers without follow-up questions."
-- Project context: "Working on voice-agent repo — Pipecat bot with Soniox STT/TTS."
-- Decisions made: "Chose SQLite FTS5 for session search over Chroma."
-- Lessons learned: "DeepSeek's thinking mode adds 2s latency — keep disabled for voice."
-
-### When NOT to use memory
-
-- Transient facts about the current conversation only.
-- Information already present in the current session context.
-- Questions the user asked (those are in session logs via `search_history`)."""
 
 # Project-context discovery priority ladder. First match wins.
 _CONTEXT_PRIORITY = [
@@ -60,22 +31,6 @@ _CONTEXT_PRIORITY = [
     "CLAUDE.md",
     ".cursorrules",
 ]
-
-
-def _default_agent_home() -> Path:
-    """Return the agent home directory from VOICE_AGENT_HOME env var.
-
-    voice_bot.py sets VOICE_AGENT_HOME at import time; all other modules
-    read it as the single source of truth (no Path.cwd() fallback).
-    """
-    import os
-    home = os.environ.get("VOICE_AGENT_HOME")
-    if not home:
-        raise RuntimeError(
-            "VOICE_AGENT_HOME is not set. voice_bot.py must be imported first "
-            "(it sets the env var at module level)."
-        )
-    return Path(home)
 
 
 class PromptBuilder:
@@ -88,7 +43,7 @@ class PromptBuilder:
         default_identity: Optional[str] = None,
         agent_home: Optional[Path] = None,
     ) -> None:
-        self.agent_home = (agent_home or _default_agent_home()).expanduser().resolve()
+        self.agent_home = (agent_home or _agent_home()).expanduser().resolve()
         self.memory_store = memory_store or MemoryStore(
             base_path=self.agent_home / "memories"
         )
@@ -142,6 +97,20 @@ class PromptBuilder:
                 return f"\n# Project Rules ({filename})\n{target.read_text(encoding='utf-8')}"
         return ""
 
+    def _collect_tool_guidance(self) -> str:
+        """Collect usage guidance from every registered tool that has it.
+
+        Tool authors set ``guidance`` on their ``BaseTool`` subclass.
+        PromptBuilder joins them — it never hard-codes tool-specific prose.
+        """
+        if self.registry is None:
+            return ""
+        blocks: list[str] = []
+        for tool in self.registry.all():
+            if tool.guidance:
+                blocks.append(tool.guidance.strip())
+        return "\n\n".join(blocks)
+
     def get_tool_descriptions(self) -> str:
         """Return the category-grouped tool inventory from the registry."""
         if self.registry is None:
@@ -154,7 +123,7 @@ class PromptBuilder:
         Each skill is a directory containing a ``SKILL.md`` file. The
         index extracts the first substantive line as a one-line summary.
         """
-        skills_dir = self.agent_home / "skills"
+        skills_dir = _skills_dir()
         if not skills_dir.exists():
             return ""
 
@@ -205,10 +174,11 @@ class PromptBuilder:
         if user:
             parts.append(user)
 
-        # Memory tool guidance — teaches the agent HOW to use its memory.
-        # Only inject when the memory tool is in the registry.
-        if self.registry is not None and "memory" in {t.name for t in self.registry.all()}:
-            parts.append(_MEMORY_GUIDANCE.strip())
+        # Tool usage guidance — collected from the registry, not hard-coded.
+        # Each tool can set `guidance` on its class; PromptBuilder collects them.
+        tool_guidance = self._collect_tool_guidance()
+        if tool_guidance:
+            parts.append(tool_guidance)
 
         # Project-specific rules
         if context:

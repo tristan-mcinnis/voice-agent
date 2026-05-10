@@ -1,4 +1,8 @@
-"""Desktop-automation tools — clipboard, browser, capture, terminal, system info.
+"""Desktop-automation tools — clipboard, browser, terminal, system info.
+
+Vision capture tools (screenshot, webcam, window, region, display) live in
+``tools/capture.py`` — this module only handles automation that reads state
+from macOS.
 
 All implementations live in BaseTool.execute() methods — the canonical interface.
 Thin backward-compat callables are re-exported from __init__.py.
@@ -9,12 +13,9 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
-from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from tools.registry import REGISTRY, BaseTool
-from tools.vision import describe_image, no_vision_message
 
 
 # ---------------------------------------------------------------------------
@@ -65,25 +66,6 @@ def _browser_url_script(app: str) -> str:
     if app == "Safari":
         return f'tell application "{app}" to return URL of current tab of front window'
     return f'tell application "{app}" to return URL of active tab of front window'
-
-
-# ---------------------------------------------------------------------------
-# Capture path helpers (moved from vision.py — their only callers are here)
-# ---------------------------------------------------------------------------
-
-def captures_dir() -> Path:
-    """Where capture tools write their images. Mirrors session_log's VOICE_BOT_LOG_DIR."""
-    import os
-    base = Path(os.getenv("VOICE_BOT_LOG_DIR", "logs"))
-    d = base / "captures"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def capture_path(kind: str, ext: str = "jpg") -> str:
-    """Build a timestamped path under logs/captures/."""
-    ts = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    return str(captures_dir() / f"{kind}-{ts}.{ext}")
 
 
 # ---------------------------------------------------------------------------
@@ -346,206 +328,6 @@ class ListBrowserTabsTool(BaseTool):
                 + f"\n...and {len(tabs) - 25} more."
             )
         return header + "\n" + "\n".join(tabs)
-
-
-@REGISTRY.register
-class TakeScreenshotTool(BaseTool):
-    name = "take_screenshot"
-    category = "vision"
-    speak_text = "Looking at your screen."
-    description = (
-        "Capture the user's screen and (if a vision provider is configured) "
-        "describe what's on it. Use when the user asks about what's on their screen."
-    )
-    parameters = {
-        "question": {
-            "type": "string",
-            "description": "What the user wants to know about the screen, used as the vision prompt. Optional.",
-        },
-    }
-
-    def execute(self, question: str = "") -> dict:
-        path = capture_path("screenshot")
-        try:
-            from PIL import ImageGrab
-
-            img = ImageGrab.grab()
-            img.convert("RGB").save(path, "JPEG", quality=85)
-        except Exception as exc:
-            return {"result": f"Screenshot capture failed: {exc}"}
-
-        prompt = question.strip() or "Briefly describe what's on this screen."
-        description = describe_image(path, prompt)
-        if description:
-            return {"result": f"Screenshot taken. {description}", "image_path": path}
-        return {"result": no_vision_message(), "image_path": path}
-
-
-@REGISTRY.register
-class CaptureWebcamTool(BaseTool):
-    name = "capture_webcam"
-    category = "vision"
-    speak_text = "Let me see."
-    description = (
-        "Capture one frame from the user's webcam and (if vision is configured) "
-        "describe it. Use when the user asks 'what do you see' or wants you to "
-        "look at them or what they're holding."
-    )
-    parameters = {
-        "question": {
-            "type": "string",
-            "description": "What the user wants you to look for, used as the vision prompt. Optional.",
-        },
-    }
-
-    def execute(self, question: str = "") -> dict:
-        try:
-            import cv2
-        except ImportError:
-            return {"result": "Webcam tool unavailable: opencv-python is not installed."}
-
-        path = capture_path("webcam")
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            cap.release()
-            return {"result": "Webcam capture failed: could not open default camera."}
-        try:
-            for _ in range(3):
-                ok, frame = cap.read()
-            if not ok or frame is None:
-                return {"result": "Webcam capture failed: no frame received."}
-            cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        finally:
-            cap.release()
-
-        prompt = question.strip() or "Briefly describe what you see in this webcam image."
-        description = describe_image(path, prompt)
-        if description:
-            return {"result": f"Webcam image captured. {description}", "image_path": path}
-        return {"result": no_vision_message(), "image_path": path}
-
-
-@REGISTRY.register
-class CaptureFrontmostWindowTool(BaseTool):
-    name = "capture_frontmost_window"
-    category = "vision"
-    speak_text = "Looking at your window."
-    description = (
-        "Capture the frontmost application window (macOS only) and describe it via "
-        "the configured vision provider. Use when the user says 'look at this window'."
-    )
-    parameters = {
-        "question": {"type": "string", "description": "What to look for. Optional."},
-    }
-
-    def execute(self, question: str = "") -> dict:
-        if not _is_macos():
-            return {"result": _macos_only_msg("Window capture")}
-
-        script = '''
-        tell application "System Events"
-            set frontApp to first process whose frontmost is true
-            set frontWindow to front window of frontApp
-            set {x, y} to position of frontWindow
-            set {w, h} to size of frontWindow
-            return (x as string) & " " & (y as string) & " " & (w as string) & " " & (h as string)
-        end tell
-        '''
-        try:
-            bounds = _osascript(script).split()
-            x, y, w, h = bounds
-        except Exception as exc:
-            return {"result": f"Could not get frontmost window bounds: {exc}"}
-
-        path = capture_path("window")
-        try:
-            subprocess.run(
-                ["screencapture", "-x", "-t", "jpg", "-R", f"{x},{y},{w},{h}", path],
-                check=True, capture_output=True, timeout=10.0,
-            )
-        except Exception as exc:
-            return {"result": f"Window capture failed: {exc}"}
-
-        prompt = question.strip() or "Briefly describe what's in this window."
-        description = describe_image(path, prompt)
-        if description:
-            return {"result": f"Window captured. {description}", "image_path": path}
-        return {"result": no_vision_message(), "image_path": path}
-
-
-@REGISTRY.register
-class CaptureScreenRegionTool(BaseTool):
-    name = "capture_screen_region"
-    category = "vision"
-    speak_text = "Looking at that area."
-    description = (
-        "Capture a rectangular region of the screen (macOS only) and describe it. "
-        "Coordinates are in screen points: (0,0) is top-left."
-    )
-    parameters = {
-        "x": {"type": "integer", "description": "Left edge in screen points."},
-        "y": {"type": "integer", "description": "Top edge in screen points."},
-        "width": {"type": "integer", "description": "Region width in points."},
-        "height": {"type": "integer", "description": "Region height in points."},
-        "question": {"type": "string", "description": "What to look for. Optional."},
-    }
-    required = ["x", "y", "width", "height"]
-
-    def execute(
-        self, x: int, y: int, width: int, height: int, question: str = ""
-    ) -> dict:
-        if not _is_macos():
-            return {"result": _macos_only_msg("Region capture")}
-        path = capture_path("region")
-        try:
-            subprocess.run(
-                [
-                    "screencapture", "-x", "-t", "jpg", "-R",
-                    f"{x},{y},{width},{height}", path,
-                ],
-                check=True, capture_output=True, timeout=10.0,
-            )
-        except Exception as exc:
-            return {"result": f"Region capture failed: {exc}"}
-
-        prompt = question.strip() or "Briefly describe what's in this screen region."
-        description = describe_image(path, prompt)
-        if description:
-            return {"result": f"Region captured. {description}", "image_path": path}
-        return {"result": no_vision_message(), "image_path": path}
-
-
-@REGISTRY.register
-class CaptureDisplayTool(BaseTool):
-    name = "capture_display"
-    category = "vision"
-    speak_text = "Looking at that display."
-    description = (
-        "Capture a specific display/monitor by index (1 = primary; macOS only). "
-        "Note: monitors, not virtual desktops/Spaces — those aren't capturable."
-    )
-    parameters = {
-        "display": {"type": "integer", "description": "Display index (1 = primary)."},
-        "question": {"type": "string", "description": "What to look for. Optional."},
-    }
-
-    def execute(self, display: int = 1, question: str = "") -> dict:
-        if not _is_macos():
-            return {"result": _macos_only_msg("Display capture")}
-        path = capture_path(f"display{display}")
-        try:
-            subprocess.run(
-                ["screencapture", "-x", "-t", "jpg", f"-D{display}", path],
-                check=True, capture_output=True, timeout=10.0,
-            )
-        except Exception as exc:
-            return {"result": f"Display capture failed: {exc}"}
-
-        prompt = question.strip() or f"Briefly describe what's on display {display}."
-        description = describe_image(path, prompt)
-        if description:
-            return {"result": f"Display {display} captured. {description}", "image_path": path}
-        return {"result": no_vision_message(), "image_path": path}
 
 
 @REGISTRY.register

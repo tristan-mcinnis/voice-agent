@@ -14,27 +14,17 @@ into the system prompt. The stable prefix stays warm in provider-side caches.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Optional
 
 from loguru import logger
 
+from agent.paths import memories_dir
 from tools.registry import BaseTool, REGISTRY
 
 # Character limits — voice context is small, so keep these tight.
 USER_CHAR_LIMIT = 1375
 MEMORY_CHAR_LIMIT = 2200
-
-
-def _agent_memories_dir() -> Path:
-    home = os.environ.get("VOICE_AGENT_HOME")
-    if not home:
-        raise RuntimeError(
-            "VOICE_AGENT_HOME is not set. voice_bot.py must be imported first "
-            "(it sets the env var at module level)."
-        )
-    return Path(home) / "memories"
 
 
 def _limit_for(target: str) -> int:
@@ -113,6 +103,33 @@ class MemoryTool(BaseTool):
     required = ["action", "target"]
     category = "system"
     speak_text: Optional[str] = None
+    guidance = """
+## Memory Tool Usage
+
+You have a `memory` tool that manages two persistent files:
+
+- **USER.md** — facts about the user (preferences, background, style). Max 1,375 characters.
+- **MEMORY.md** — project/environment facts (tech stack, decisions, state). Max 2,200 characters.
+
+Entries are separated by `§` delimiters. The actions are:
+
+- **list** — See current entries and their indices. Use this FIRST before adding or replacing, so you know what's already stored.
+- **add** — Append a new entry. The tool checks for near-duplicates and enforces the character limit. If memory pressure is reported, use `replace` to swap a less-important entry instead of adding.
+- **replace** — Update an existing entry by providing the `old_text` substring to match. The entry containing that text is replaced with your `content`.
+
+### When to use memory
+
+Record facts that should survive across sessions:
+- User preferences: "User prefers short answers without follow-up questions."
+- Project context: "Working on voice-agent repo — Pipecat bot with Soniox STT/TTS."
+- Decisions made: "Chose SQLite FTS5 for session search over Chroma."
+- Lessons learned: "DeepSeek's thinking mode adds 2s latency — keep disabled for voice."
+
+### When NOT to use memory
+
+- Transient facts about the current conversation only.
+- Information already present in the current session context.
+- Questions the user asked (those are in session logs via `search_history`)."""
 
     def execute(
         self,
@@ -121,8 +138,7 @@ class MemoryTool(BaseTool):
         content: str = "",
         old_text: str = "",
     ) -> dict:
-        dir_ = _agent_memories_dir()
-        dir_.mkdir(parents=True, exist_ok=True)
+        dir_ = memories_dir()
         path = dir_ / f"{target.upper()}.md"
         entries = _load_entries(path)
         limit = _limit_for(target)

@@ -16,6 +16,7 @@ from tools.registry import BaseTool, REGISTRY, ToolRegistry  # noqa: F401
 
 # Side-effect imports: each module registers its tools on REGISTRY at import time.
 import tools.files     # noqa: F401
+import tools.capture   # noqa: F401
 import tools.desktop   # noqa: F401
 import tools.web       # noqa: F401
 import tools.memory    # noqa: F401
@@ -50,6 +51,13 @@ search_files = _compat("search_files")
 list_folder = _compat("list_folder")
 read_finder_selection = _compat("read_finder_selection")
 
+# -- capture.py compat -------------------------------------------------------
+take_screenshot = _compat("take_screenshot")
+capture_webcam = _compat("capture_webcam")
+capture_frontmost_window = _compat("capture_frontmost_window")
+capture_screen_region = _compat("capture_screen_region")
+capture_display = _compat("capture_display")
+
 # -- desktop.py compat -------------------------------------------------------
 read_clipboard = _compat("read_clipboard")
 read_selected_text = _compat("read_selected_text")
@@ -57,11 +65,6 @@ read_focused_input = _compat("read_focused_input")
 read_browser_url = _compat("read_browser_url")
 read_browser_page_text = _compat("read_browser_page_text")
 list_browser_tabs = _compat("list_browser_tabs")
-take_screenshot = _compat("take_screenshot")
-capture_webcam = _compat("capture_webcam")
-capture_frontmost_window = _compat("capture_frontmost_window")
-capture_screen_region = _compat("capture_screen_region")
-capture_display = _compat("capture_display")
 get_frontmost_app = _compat("get_frontmost_app")
 list_running_apps = _compat("list_running_apps")
 read_terminal_output = _compat("read_terminal_output")

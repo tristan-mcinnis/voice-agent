@@ -37,6 +37,7 @@ from pipecat.transcriptions.language import Language
 import tools as tools_module
 from agent.prompt_builder import PromptBuilder
 from config import Config, load_config, require_api_key
+from tools.vision import set_vision_config
 
 
 # Project-local agent home — keeps voice-agent data separate from any other
@@ -121,6 +122,9 @@ def build_components(
         config: Optional pre-loaded `Config`. Defaults to `load_config()`.
     """
     cfg = config or load_config()
+
+    # Seed the vision chain once so describe_image() never calls load_config().
+    set_vision_config(cfg.vision)
 
     stt = _build_stt(cfg)
     tts = _build_tts(cfg)

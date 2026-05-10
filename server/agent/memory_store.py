@@ -11,21 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-
-def _default_memories_path() -> Path:
-    """Return the memories directory from VOICE_AGENT_HOME env var.
-
-    voice_bot.py sets VOICE_AGENT_HOME at import time; all other modules
-    read it as the single source of truth (no Path.cwd() fallback).
-    """
-    import os
-    home = os.environ.get("VOICE_AGENT_HOME")
-    if not home:
-        raise RuntimeError(
-            "VOICE_AGENT_HOME is not set. voice_bot.py must be imported first "
-            "(it sets the env var at module level)."
-        )
-    return Path(home) / "memories"
+from agent.paths import memories_dir
 
 
 class MemoryStore:
@@ -38,7 +24,7 @@ class MemoryStore:
     """
 
     def __init__(self, base_path: Optional[Path] = None) -> None:
-        self.base_path = (base_path or _default_memories_path()).expanduser().resolve()
+        self.base_path = (base_path or memories_dir()).expanduser().resolve()
         self.base_path.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------

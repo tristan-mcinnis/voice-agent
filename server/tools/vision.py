@@ -19,6 +19,25 @@ from loguru import logger
 
 
 # ---------------------------------------------------------------------------
+# Vision config — set once at startup, read by describe_image / no_vision_message
+# ---------------------------------------------------------------------------
+
+_vision_providers: list[Any] = []
+
+
+def set_vision_config(providers: list[Any]) -> None:
+    """Store the vision provider chain for the lifetime of the process.
+
+    Called by ``voice_bot.build_components()`` after loading config.
+    ``describe_image()`` and ``no_vision_message()`` read from here
+    instead of calling ``load_config()`` — the vision system no longer
+    has a hidden dependency on the YAML loader.
+    """
+    global _vision_providers
+    _vision_providers = list(providers)
+
+
+# ---------------------------------------------------------------------------
 # Image preparation
 # ---------------------------------------------------------------------------
 
@@ -200,14 +219,15 @@ def try_describe_with(provider: Any, image_path: str, prompt: str) -> str | None
 
 
 def describe_image(image_path: str, prompt: str) -> str | None:
-    """Walk the vision provider chain; first success wins."""
-    from config import load_config
+    """Walk the vision provider chain; first success wins.
 
-    providers = load_config().vision
-    if not providers:
+    Uses the config set by ``set_vision_config()`` at startup. If vision
+    hasn't been configured (e.g. in tests), returns None.
+    """
+    if not _vision_providers:
         return None
 
-    for provider in providers:
+    for provider in _vision_providers:
         result = try_describe_with(provider, image_path, prompt)
         if result:
             return result
@@ -215,18 +235,18 @@ def describe_image(image_path: str, prompt: str) -> str | None:
 
 
 def no_vision_message() -> str:
-    """Build a spoken-friendly message explaining why vision didn't work."""
-    from config import load_config
+    """Build a spoken-friendly message explaining why vision didn't work.
 
-    providers = load_config().vision
-    if not providers:
+    Uses the config set by ``set_vision_config()`` at startup.
+    """
+    if not _vision_providers:
         return (
             "I captured the image but vision is disabled in config.yaml. "
             "Configure at least one vision provider there to enable describe."
         )
-    names = ", ".join(p.name for p in providers)
+    names = ", ".join(p.name for p in _vision_providers)
     missing = [
-        p.api_key_env for p in providers
+        p.api_key_env for p in _vision_providers
         if p.api_key_env and not os.getenv(p.api_key_env)
     ]
     if missing:
