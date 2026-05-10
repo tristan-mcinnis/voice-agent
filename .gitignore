@@ -24,3 +24,7 @@ server/tests/test_tts.wav
 # Local plugin/tool dirs
 .omc/
 server/.omc/
+
+# Agent data (SOUL.md, memories, skills)
+.voice-agent/
+server/.voice-agent/

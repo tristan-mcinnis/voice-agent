@@ -15,6 +15,10 @@ server/
   config.example.yaml   example config (copy to config.yaml)
   hotkey_interrupt.py   global hotkey (⌘⇧I)
 
+  agent/                cognitive-stack prompt assembly
+    prompt_builder.py   multi-layer frozen system-prompt builder
+    memory_store.py     read-only USER.md / MEMORY.md snapshots
+
   tools/                LLM-callable tool implementations
     __init__.py         re-exports REGISTRY, all tool functions
     registry.py         BaseTool, ToolRegistry, REGISTRY, _make_handler
@@ -23,6 +27,7 @@ server/
     files.py            file ops + tool classes
     desktop.py          macOS automation + tool classes
     web.py              web search, weather demo + tool classes
+    memory.py           patch_memory tool (update USER.md / MEMORY.md)
 
   processors/           pipeline FrameProcessor stages
     echo_suppressor.py  drops STT frames while bot speaks
@@ -32,6 +37,7 @@ server/
   docs/adr/             architecture decision records
   experiments/aec/      archived Speex AEC experiment
   CONTEXT.md            domain glossary
+  .voice-agent/         agent data (SOUL.md, memories, skills) — gitignored
 ```
 
 ## Common commands
@@ -72,8 +78,9 @@ and the wake-word gate.
   disable vision. See ADR-0002.
 - `wake_word.{enabled, phrase, sleep_phrase, idle_timeout_seconds, ack_text,
   start_awake}` — see Wake word section below.
-- `system_prompt` — multiline LLM system message; the `{tool_capabilities}`
-  placeholder is auto-filled with a category-grouped tool inventory.
+- `system_prompt` — fallback identity when `SOUL.md` is missing or empty. The
+  actual system prompt is assembled once per session by `PromptBuilder` from
+  the cognitive stack (Soul → Memory → User → Rules → Tools → Skills).
 
 `config.py` parses `config.yaml` into typed dataclasses; lookup is `lru_cache`d.
 
@@ -135,11 +142,21 @@ Key facts:
   in `{"result": value}`. Blocking I/O runs in `asyncio.to_thread`. Heavy
   imports (`pyperclip`, `PIL`, `cv2`, `mlx_vlm`) are lazy so a missing dep
   disables only that tool.
+- **Cognitive Stack Prompt Builder.** `agent.prompt_builder.PromptBuilder`
+  assembles the frozen system prompt once per session from layered snapshots:
+  `SOUL.md` (identity), `MEMORY.md` (project facts), `USER.md` (preferences),
+  project rule files (`.voice-agent.md`, `AGENTS.md`, `CLAUDE.md`,
+  `.cursorrules`), the tool registry inventory, and a skills index. The stable
+  prefix (Soul + Memory + User) stays warm in provider-side caches because it
+  never changes mid-session.
+- **`patch_memory` tool.** The agent can call `patch_memory(file, insight)`
+  to append or update `USER.md` and `MEMORY.md`, closing the learning loop.
+  Updates are written to disk but only affect the *next* session — the current
+  session's prompt is a read-only snapshot.
 - **`{tool_capabilities}` placeholder.** `REGISTRY.capabilities_summary()`
-  produces a category-grouped tool inventory that `voice_bot.build_components`
-  substitutes into the `{tool_capabilities}` slot in the system prompt. Keep
-  that slot in the prompt so the LLM stays aware of available tools without
-  the prompt hard-coding names.
+  produces a category-grouped tool inventory. When the fallback identity
+  (config `system_prompt`) still contains this placeholder, the PromptBuilder
+  substitutes it inline for backward compatibility.
 - **Vision is a fallback chain**, not a single provider.
   `tools.vision.describe_image()` walks the `vision:` list and returns the
   first non-empty description. DeepSeek's chat API rejects `image_url` blocks,

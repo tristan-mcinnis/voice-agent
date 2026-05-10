@@ -33,8 +33,26 @@ Standalone smoke tests:
 ```bash
 python tests/test_tts.py    # writes test_tts.wav (Soniox TTS WebSocket)
 python tests/test_stt.py    # transcribes test_tts.wav (run test_tts.py first)
-python tests/test_tools.py  # exercises every tool in tools.TOOLS
+python tests/test_tools.py  # exercises every tool in tools.REGISTRY
 ```
+
+## Customizing the agent's personality & memory
+
+The bot assembles its system prompt from a **cognitive stack** (inspired by the
+Hermes agent architecture). Create files in the project-local `.voice-agent/`
+directory (gitignored) to customize each layer:
+
+| Layer | File | What to put there |
+|-------|------|-------------------|
+| **Soul** | `.voice-agent/SOUL.md` | Personality, tone, and core rules. Overrides `config.yaml`'s `system_prompt` when present. |
+| **Memory** | `.voice-agent/memories/MEMORY.md` | Long-term project facts and lessons learned. |
+| **User** | `.voice-agent/memories/USER.md` | Your identity, preferences, and workspace context. |
+| **Skills** | `.voice-agent/skills/<name>/SKILL.md` | Reusable skill descriptions (optional). |
+
+The agent can update its own memories via the `patch_memory` tool — e.g.
+`patch_memory(file="MEMORY.md", insight="API key rotated")`. Changes are
+written to disk but only affect the *next* session; the current session's
+prompt is a frozen snapshot.
 
 ## Wake word
 
@@ -73,16 +91,27 @@ Python changes needed.
 server/
 ├── local_bot.py        # Entry point: mic in, speakers out
 ├── voice_bot.py        # Shared STT+TTS+LLM+tools builder
-├── local_audio.py      # Mic/speakers concerns: mute strategies, turn strategies
-├── wake_word.py        # Wake-word gate (FrameProcessor)
-├── tools.py            # Tool registry (clipboard, files, browser, capture, search, ...)
 ├── config.py           # Loads config.yaml into typed dataclasses
-├── config.yaml         # Provider/model/voice/prompt/vision/wake-word config
-├── mlx_vision.py       # In-process MLX vision describer (Apple-Silicon only)
-├── session_log.py      # Per-session kebab-case JSONL event logger
-├── tests/              # Standalone smoke tests
-│   ├── test_stt.py     #   Soniox STT WebSocket test
-│   ├── test_tts.py     #   Soniox TTS WebSocket test
-│   └── test_tools.py   #   Tool registry smoke test
+├── config.example.yaml # Reference config (copy to config.yaml)
+├── hotkey_interrupt.py # Global interrupt hotkey
+├── agent/
+│   ├── prompt_builder.py   # Cognitive-stack system-prompt assembly
+│   └── memory_store.py     # Read-only USER.md / MEMORY.md loader
+├── tools/
+│   ├── registry.py     # BaseTool, ToolRegistry, REGISTRY
+│   ├── files.py        # File ops + tool classes
+│   ├── desktop.py      # macOS automation + tool classes
+│   ├── web.py          # Web search, weather demo + tool classes
+│   ├── memory.py       # patch_memory tool
+│   ├── vision.py       # Image description fallback chain
+│   └── mlx_vision.py   # In-process MLX vision (Apple-Silicon only)
+├── processors/
+│   ├── echo_suppressor.py  # Drops STT while bot speaks
+│   ├── wake_word.py        # Wake-word gate
+│   └── session_log.py      # Per-session JSONL logger
+├── tests/
+│   ├── test_stt.py     # Soniox STT WebSocket test
+│   ├── test_tts.py     # Soniox TTS WebSocket test
+│   └── test_tools.py   # Tool registry smoke test
 └── requirements.txt
 ```
