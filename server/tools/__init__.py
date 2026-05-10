@@ -19,6 +19,7 @@ import tools.files     # noqa: F401
 import tools.capture   # noqa: F401
 import tools.desktop   # noqa: F401
 import tools.computer_use  # noqa: F401
+import tools.grounding_vision  # noqa: F401
 import tools.web       # noqa: F401
 import tools.memory    # noqa: F401
 import tools.search_history  # noqa: F401
@@ -78,6 +79,9 @@ type_text = _compat("type_text")
 press_key = _compat("press_key")
 scroll = _compat("scroll")
 mouse_move = _compat("mouse_move")
+
+# -- grounding_vision.py compat ----------------------------------------------
+find_on_screen = _compat("find_on_screen")
 
 # -- web.py compat -----------------------------------------------------------
 web_search = _compat("web_search")
