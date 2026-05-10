@@ -521,24 +521,155 @@ def read_focused_input() -> str:
 # File system
 # ---------------------------------------------------------------------------
 
-def read_file(path: str, max_bytes: int = 100_000) -> str:
-    """Read a file and return its content (truncated to max_bytes)."""
+def read_file(path: str, offset: int = 1, limit: int = 500) -> str:
+    """Read a text file with line numbers and pagination.
+
+    Output lines are formatted `LINE_NUM|CONTENT`. `offset` is 1-based.
+    """
     p = Path(path).expanduser()
     if not p.exists():
         return f"File not found: {p}"
     if p.is_dir():
         return f"{p} is a directory, not a file. Use list_folder instead."
+    if offset < 1:
+        offset = 1
+    if limit < 1:
+        limit = 500
     try:
-        size = p.stat().st_size
         with open(p, "r", errors="replace") as fh:
-            content = fh.read(max_bytes)
-        if size > max_bytes:
-            return (
-                f"File {p.name} ({size} bytes — truncated to {max_bytes}):\n{content}"
-            )
-        return f"File {p.name} ({size} bytes):\n{content}"
+            lines = fh.readlines()
     except Exception as exc:
         return f"Could not read {p}: {exc}"
+
+    total = len(lines)
+    end = min(offset - 1 + limit, total)
+    chunk = lines[offset - 1:end]
+    body = "".join(f"{offset + i}|{line.rstrip(chr(10))}\n" for i, line in enumerate(chunk))
+    header = f"File {p.name} (lines {offset}-{end} of {total}):\n"
+    if end < total:
+        body += f"...({total - end} more lines; raise offset to continue)\n"
+    return header + body
+
+
+def write_file(path: str, content: str) -> str:
+    """Create or completely overwrite a file. Creates parent dirs as needed."""
+    p = Path(path).expanduser()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        existed = p.exists()
+        with open(p, "w") as fh:
+            fh.write(content)
+    except Exception as exc:
+        return f"Could not write {p}: {exc}"
+    verb = "Overwrote" if existed else "Created"
+    return f"{verb} {p} ({len(content)} bytes)."
+
+
+def _fuzzy_find(haystack: str, needle: str) -> tuple[int, int] | None:
+    """Find `needle` in `haystack` exactly first, then with whitespace-tolerant match.
+
+    Returns (start, end) on success, None on failure or ambiguity.
+    """
+    idx = haystack.find(needle)
+    if idx >= 0:
+        # Reject non-unique exact matches.
+        if haystack.find(needle, idx + 1) >= 0:
+            return None
+        return idx, idx + len(needle)
+
+    import re
+    pattern = re.compile(
+        r"\s*".join(re.escape(tok) for tok in needle.split()),
+        re.MULTILINE,
+    )
+    matches = list(pattern.finditer(haystack))
+    if len(matches) == 1:
+        m = matches[0]
+        return m.start(), m.end()
+    return None
+
+
+def patch_file(path: str, old_str: str, new_str: str) -> str:
+    """Targeted edit using fuzzy match. Returns a unified diff of the change."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        return f"File not found: {p}"
+    if p.is_dir():
+        return f"{p} is a directory, not a file."
+    try:
+        original = p.read_text(errors="replace")
+    except Exception as exc:
+        return f"Could not read {p}: {exc}"
+
+    span = _fuzzy_find(original, old_str)
+    if span is None:
+        return (
+            f"Patch failed: `old_str` not found uniquely in {p}. "
+            "Add more surrounding context to make it unique."
+        )
+    start, end = span
+    updated = original[:start] + new_str + original[end:]
+
+    try:
+        p.write_text(updated)
+    except Exception as exc:
+        return f"Could not write {p}: {exc}"
+
+    import difflib
+    diff = difflib.unified_diff(
+        original.splitlines(keepends=True),
+        updated.splitlines(keepends=True),
+        fromfile=str(p), tofile=str(p), n=3,
+    )
+    diff_text = "".join(diff)
+
+    # Best-effort syntax check for Python files.
+    syntax_msg = ""
+    if p.suffix == ".py":
+        try:
+            compile(updated, str(p), "exec")
+            syntax_msg = "\nSyntax check: OK."
+        except SyntaxError as exc:
+            syntax_msg = f"\nSyntax check FAILED: {exc}"
+
+    return f"Patched {p}.{syntax_msg}\n{diff_text}" if diff_text else f"Patched {p} (no textual diff)."
+
+
+def search_files(target: str, query: str, path: str = ".", max_results: int = 50) -> str:
+    """Search file contents or filenames. Uses ripgrep when available."""
+    p = Path(path).expanduser()
+    if not p.exists():
+        return f"Path not found: {p}"
+
+    if target == "content":
+        rg = subprocess.run(
+            ["rg", "--line-number", "--no-heading", "--color=never",
+             "--max-count", "5", "-e", query, str(p)],
+            capture_output=True, text=True, timeout=15.0,
+        )
+        if rg.returncode not in (0, 1):
+            return f"Search failed: {rg.stderr.strip() or 'rg error'}"
+        lines = [l for l in rg.stdout.splitlines() if l]
+        if not lines:
+            return f"No matches for {query!r} in {p}."
+        header = f"{len(lines)} match{'es' if len(lines) != 1 else ''} for {query!r}:"
+        if len(lines) > max_results:
+            return header + "\n" + "\n".join(lines[:max_results]) + f"\n...and {len(lines) - max_results} more."
+        return header + "\n" + "\n".join(lines)
+
+    if target == "filename":
+        try:
+            matches = [str(m) for m in p.rglob(query)]
+        except Exception as exc:
+            return f"Filename search failed: {exc}"
+        if not matches:
+            return f"No files matching {query!r} under {p}."
+        header = f"{len(matches)} file{'s' if len(matches) != 1 else ''} matching {query!r}:"
+        if len(matches) > max_results:
+            return header + "\n" + "\n".join(matches[:max_results]) + f"\n...and {len(matches) - max_results} more."
+        return header + "\n" + "\n".join(matches)
+
+    return f"Unknown target {target!r}. Use 'content' or 'filename'."
 
 
 def list_folder(path: str, recursive: bool = False, max_items: int = 50) -> str:
@@ -1093,17 +1224,82 @@ class ReadFileTool(BaseTool):
     category = "files"
     speak_text = "Opening that file."
     description = (
-        "Read the contents of a file at a given absolute or ~-prefixed path. "
-        "Truncates to the first 100KB. Use when the user asks about a specific file."
+        "Read a text file with line numbers (LINE_NUM|CONTENT format) and "
+        "pagination. Use offset/limit to page through large files."
     )
     parameters = {
         "path": {"type": "string", "description": "Absolute or ~-prefixed path to the file."},
-        "max_bytes": {"type": "integer", "description": "Truncate after this many bytes. Default 100000."},
+        "offset": {"type": "integer", "description": "1-based line to start from. Default 1."},
+        "limit": {"type": "integer", "description": "Max lines to return. Default 500."},
     }
     required = ["path"]
 
-    def execute(self, path: str, max_bytes: int = 100_000) -> str:
-        return read_file(path, max_bytes)
+    def execute(self, path: str, offset: int = 1, limit: int = 500) -> str:
+        return read_file(path, offset, limit)
+
+
+@REGISTRY.register
+class WriteFileTool(BaseTool):
+    name = "write_file"
+    category = "files"
+    speak_text = "Writing that file."
+    description = (
+        "Create a new file or completely overwrite an existing one. Creates "
+        "parent directories as needed. Use `patch` for targeted edits to large files."
+    )
+    parameters = {
+        "path": {"type": "string", "description": "Where to save the file."},
+        "content": {"type": "string", "description": "Full content to write."},
+    }
+    required = ["path", "content"]
+
+    def execute(self, path: str, content: str) -> str:
+        return write_file(path, content)
+
+
+@REGISTRY.register
+class PatchFileTool(BaseTool):
+    name = "patch"
+    category = "files"
+    speak_text = "Applying that change."
+    description = (
+        "Apply a targeted edit to a file via fuzzy find-and-replace. The "
+        "`old_str` must appear uniquely in the file; whitespace is tolerated. "
+        "Returns a unified diff and (for .py files) a syntax-check result."
+    )
+    parameters = {
+        "path": {"type": "string", "description": "Path to the file being edited."},
+        "old_str": {"type": "string", "description": "Exact block to replace. Include enough context to be unique."},
+        "new_str": {"type": "string", "description": "Replacement block."},
+    }
+    required = ["path", "old_str", "new_str"]
+
+    def execute(self, path: str, old_str: str, new_str: str) -> str:
+        return patch_file(path, old_str, new_str)
+
+
+@REGISTRY.register
+class SearchFilesTool(BaseTool):
+    name = "search_files"
+    category = "files"
+    speak_text = "Searching."
+    description = (
+        "Search for a string inside file contents (target='content', uses ripgrep) "
+        "or for filenames matching a glob (target='filename')."
+    )
+    parameters = {
+        "target": {
+            "type": "string",
+            "enum": ["content", "filename"],
+            "description": "Search inside file contents or for file names.",
+        },
+        "query": {"type": "string", "description": "Regex/string for content; glob for filename."},
+        "path": {"type": "string", "description": "Directory to search. Default '.'."},
+    }
+    required = ["target", "query"]
+
+    def execute(self, target: str, query: str, path: str = ".") -> str:
+        return search_files(target, query, path)
 
 
 @REGISTRY.register

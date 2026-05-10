@@ -59,9 +59,9 @@ context + tool stack. To change voice/model/prompt/provider, edit
 ### Pipeline (`server/local_bot.py`)
 
 ```
-LocalAudioTransport.input → VADProcessor → Soniox STT → WakeWordGate →
-  SessionLogProcessor → user context → DeepSeek LLM → Soniox TTS →
-  LocalAudioTransport.output → assistant context
+LocalAudioTransport.input → VADProcessor → Soniox STT → EchoSuppressor →
+  WakeWordGate → SessionLogProcessor → user context → DeepSeek LLM →
+  Soniox TTS → LocalAudioTransport.output → assistant context
 ```
 
 Key facts:
@@ -77,24 +77,45 @@ Key facts:
 - **No AEC.** `LocalAudioTransport` has no echo cancellation, so the bot
   installs mute strategies + VAD-only turn-start + a connection rendezvous —
   all bundled in `local_audio.py` with the *why* documented inline.
-- **Wake word.** `WakeWordGate` (`server/wake_word.py`) sits after STT. While
-  asleep, it drops `TranscriptionFrame`/`InterimTranscriptionFrame` so the LLM
-  is never invoked. On hearing the configured phrase it pushes a
-  `TTSSpeakFrame(ack_text)` downstream and unblocks. Sleeps again on the sleep
-  phrase or after `idle_timeout_seconds` of user silence.
-- **Tool registry lives in `server/tools.py`.** Adding a tool = one entry in
-  `TOOLS` (a list of `Tool(schema, fn, speak_text=…)`). Sync `fn` returning
-  `dict` is passed back to the LLM as-is; any other return type is wrapped in
-  `{"result": value}`. Heavy imports (`pyperclip`, `PIL`, `cv2`, `mlx_vlm`)
-  are lazy so a missing optional dep just disables that one tool with a
-  spoken-friendly error.
+- **Echo suppressor.** `EchoSuppressor` (`server/echo_suppressor.py`) sits
+  between STT and WakeWordGate. It drops `TranscriptionFrame` and
+  `InterimTranscriptionFrame` while the bot is speaking and for
+  `holdoff_seconds` (default 1 s) after it stops. This prevents TTS bleed-
+  through from poisoning the LLM context.
+- **Hotkey interrupt.** `install_interrupt_hotkey` (`server/hotkey_interrupt.py`)
+  registers a global pynput hotkey (default ⌘⇧I, override with
+  `HOTKEY_INTERRUPT` env var using pynput syntax, e.g. `<ctrl>+<alt>+i`).
+  Pressing it pushes an `InterruptionTaskFrame` into the pipeline, cancelling
+  any in-flight LLM or TTS. Requires macOS Accessibility permission on first
+  run.
+- **Wake word.** `WakeWordGate` (`server/wake_word.py`) sits after
+  EchoSuppressor. While asleep it drops transcription frames so the LLM is
+  never invoked. On wake it speaks `ack_text`; on sleep phrase it speaks
+  `sleep_ack_text`. Both fields live in `config.yaml`.
+- **Tool registry lives in `server/tools.py`.** Adding a tool = write a
+  `BaseTool` subclass decorated with `@REGISTRY.register`. Set `name`,
+  `description`, `parameters`, `required`, `speak_text` (optional spoken
+  filler), `category` (groups tools in the capability summary), and implement
+  `execute(**kwargs)`. Sync `execute` returning `dict` passes through unchanged;
+  any other return type is wrapped in `{"result": value}`. Blocking I/O runs
+  in `asyncio.to_thread`. Heavy imports (`pyperclip`, `PIL`, `cv2`, `mlx_vlm`)
+  are lazy so a missing dep disables only that tool.
+- **`{tool_capabilities}` placeholder.** `REGISTRY.capabilities_summary()`
+  produces a category-grouped tool inventory that `voice_bot.build_components`
+  substitutes into the `{tool_capabilities}` slot in the system prompt. Keep
+  that slot in the prompt so the LLM stays aware of available tools without
+  the prompt hard-coding names.
 - **Vision is a fallback chain**, not a single provider.
   `tools._describe_image()` walks the `vision:` list and returns the first
   non-empty description. DeepSeek's chat API rejects `image_url` blocks, so
-  vision stays separate from the text LLM. Both `take_screenshot` and
-  `capture_webcam` accept an optional `question:` arg.
+  vision stays separate from the text LLM. Primary provider is in-process MLX
+  (`mlx-community/Qwen3-VL-2B-Instruct-4bit`); fallback is Kimi `kimi-k2.6`
+  (a reasoning model — answer may arrive in `reasoning_content`; the code
+  handles both). All vision capture tools accept an optional `question:` arg.
 - **Session logs** are kebab-case JSONL written to `logs/session-<ts>.jsonl`
-  by `session_log.py`. Override the directory with `VOICE_BOT_LOG_DIR`.
+  by `session_log.py`. Image captures are saved to `logs/captures/` as
+  timestamped JPEGs; the session log records the `image_path` alongside the
+  tool result. Override the directory with `VOICE_BOT_LOG_DIR`.
 
 ### Required env vars (`server/.env`)
 
