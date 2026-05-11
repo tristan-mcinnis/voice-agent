@@ -122,6 +122,23 @@ hotkey:
   #   "<ctrl>+<alt>+i"    ⌃⌥I
   interrupt: "<cmd>+<shift>+i"
 
+# Computer-use actuation backend — picks the engine behind click_at,
+# type_text, press_key, scroll, mouse_move.
+#
+#   native  pyautogui. Default. Works everywhere; steals cursor/focus.
+#   cua     trycua/cua's `cua-driver` (Swift MCP server). Drives macOS
+#           without stealing cursor or focus. One-time install:
+#             brew tap trycua/cua && brew install cua-driver
+#           Verify: `which cua-driver`
+#
+# If `backend: cua` is set but the binary isn't on PATH or the handshake
+# fails, the tools log a warning and silently fall back to native — the
+# bot stays usable. Call the `cua_status` tool to check connectivity.
+computer_use:
+  backend: native           # native | cua
+  cua_binary: cua-driver    # name on PATH, or absolute path
+  cua_timeout: 10.0         # seconds per cua-driver RPC
+
 # System prompt the LLM sees at conversation start. Swap freely.
 system_prompt: |
   You are a friendly multimodal voice assistant.

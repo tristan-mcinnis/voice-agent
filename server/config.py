@@ -123,6 +123,23 @@ class HotkeyConfig:
 
 
 @dataclass(frozen=True)
+class ComputerUseConfig:
+    """Actuation backend for click/type/key/scroll/move.
+
+    `native` (default) uses pyautogui — works everywhere, steals cursor/focus.
+    `cua` routes through `cua-driver`, a Swift MCP server from trycua/cua that
+    drives macOS without stealing cursor or focus. Install with:
+        brew tap trycua/cua && brew install cua-driver
+
+    If `backend: cua` is set but the binary is missing or the handshake fails,
+    each tool logs a warning and falls back to native — the bot stays usable.
+    """
+    backend: str = "native"            # "native" | "cua"
+    cua_binary: str = "cua-driver"     # name on $PATH, or absolute path
+    cua_timeout: float = 10.0          # seconds per cua-driver RPC
+
+
+@dataclass(frozen=True)
 class Config:
     llm: LLMConfig
     stt: STTConfig
@@ -133,6 +150,7 @@ class Config:
     shortcat: ShortcatConfig
     turn: TurnConfig
     hotkey: HotkeyConfig
+    computer_use: ComputerUseConfig
 
 
 def _parse_config(path: Path) -> Config:
@@ -158,6 +176,9 @@ def _parse_config(path: Path) -> Config:
     hotkey_raw = data.get("hotkey") or {}
     hotkey = HotkeyConfig(**hotkey_raw)
 
+    computer_use_raw = data.get("computer_use") or {}
+    computer_use = ComputerUseConfig(**computer_use_raw)
+
     return Config(
         llm=LLMConfig(**data["llm"]),
         stt=STTConfig(**data["stt"]),
@@ -168,6 +189,7 @@ def _parse_config(path: Path) -> Config:
         shortcat=shortcat,
         turn=turn,
         hotkey=hotkey,
+        computer_use=computer_use,
     )
 
 
