@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from agent.memory_store import MemoryStore
+from tools.memory_layer import MemoryLayer
 from agent.paths import agent_home as _agent_home, skills_dir as _skills_dir
 
 # Fallback identity when SOUL.md is missing or empty.
@@ -38,13 +38,13 @@ class PromptBuilder:
 
     def __init__(
         self,
-        memory_store: Optional[MemoryStore] = None,
+        memory_store: Optional[MemoryLayer] = None,
         registry=None,
         default_identity: Optional[str] = None,
         agent_home: Optional[Path] = None,
     ) -> None:
         self.agent_home = (agent_home or _agent_home()).expanduser().resolve()
-        self.memory_store = memory_store or MemoryStore(
+        self.memory_store = memory_store or MemoryLayer(
             base_path=self.agent_home / "memories"
         )
         self.registry = registry
@@ -223,8 +223,8 @@ class PromptBuilder:
         """
         tool_docs = self.get_tool_descriptions()
         soul, consumed_tools = self.load_soul_md(tool_descriptions=tool_docs)
-        user_profile = self.memory_store.load_user_md()
-        project_memory = self.memory_store.load_memory_md()
+        user_profile = self.memory_store.load_user_prompt()
+        project_memory = self.memory_store.load_memory_prompt()
         project_context = self.build_context_files_prompt(cwd or Path.cwd())
         skills_index = self.get_relevant_skills_index(user_input)
 

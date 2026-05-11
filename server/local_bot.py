@@ -109,19 +109,41 @@ def _local_user_aggregator_params(
     )
 
 
+def _install_diagnostics(
+    context_aggregator: LLMContextAggregatorPair,
+) -> None:
+    """Attach pure-logging event handlers for pipeline observability.
+
+    Every link in the mic → STT → user-turn → LLM → TTS chain is logged
+    so a failed run is immediately attributable to a specific stage.
+
+    Data-driven — add a line to ``_DIAG_EVENTS`` to register a new event;
+    no new closures needed.
+    """
+    _DIAG_EVENTS = [
+        ("on_user_mute_started",  "🔇 USER MUTED (bot is speaking)"),
+        ("on_user_mute_stopped",  "🎤 USER UNMUTED (mic is open)"),
+        ("on_user_turn_started",  "🗣️  USER TURN STARTED — bot detected you started speaking"),
+        ("on_user_turn_stopped",  "✅ USER TURN STOPPED — sending to LLM now"),
+        ("on_user_turn_idle",     "💤 user idle (no speech for a while)"),
+    ]
+    user = context_aggregator.user()
+    for event, msg in _DIAG_EVENTS:
+        async def _handler(*_args, _msg: str = msg) -> None:
+            logger.info(_msg)
+        user.event_handler(event)(_handler)
+
+
 def _install_local_audio_lifecycle(
     *,
     stt: SonioxSTTService,
     tts: SonioxTTSService,
     context_aggregator: LLMContextAggregatorPair,
 ) -> None:
-    """Wire the dual-connection rendezvous and diagnostic event handlers.
+    """Wire the dual-connection rendezvous for STT+TTS startup.
 
     Uses ``ConnectionRendezvous`` to push the seed context frame exactly once
     when both STT and TTS are connected — that triggers the bot's introduction.
-
-    Diagnostics expose every link in the mic → STT → user-turn → LLM → TTS
-    chain so a failed run is immediately attributable to a specific stage.
     """
     rendezvous = ConnectionRendezvous(
         callback=context_aggregator.user().push_context_frame
@@ -137,20 +159,7 @@ def _install_local_audio_lifecycle(
         logger.info("Soniox TTS connected")
         await rendezvous.tts_ready()
 
-    # Pure-logging diagnostics — data, not closures. Add a line to the table
-    # to register a new event; no new closure needed.
-    _DIAG_EVENTS = [
-        ("on_user_mute_started",  "🔇 USER MUTED (bot is speaking)"),
-        ("on_user_mute_stopped",  "🎤 USER UNMUTED (mic is open)"),
-        ("on_user_turn_started",  "🗣️  USER TURN STARTED — bot detected you started speaking"),
-        ("on_user_turn_stopped",  "✅ USER TURN STOPPED — sending to LLM now"),
-        ("on_user_turn_idle",     "💤 user idle (no speech for a while)"),
-    ]
-    user = context_aggregator.user()
-    for event, msg in _DIAG_EVENTS:
-        async def _handler(*_args, _msg: str = msg) -> None:
-            logger.info(_msg)
-        user.event_handler(event)(_handler)
+    _install_diagnostics(context_aggregator)
 
 
 # ---------------------------------------------------------------------------

@@ -52,6 +52,37 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 DEFAULT_LOG_DIR = Path(os.getenv("VOICE_BOT_LOG_DIR", "logs"))
 
 
+# ---------------------------------------------------------------------------
+# Pure logic — testable without a pipeline
+# ---------------------------------------------------------------------------
+
+def _leaves(chunks: list[str]) -> list[str]:
+    """Return chunks not strictly extended by any other chunk in the list.
+
+    Pipecat emits a mix of per-token deltas AND per-sentence cumulative
+    snapshots as ``TextFrame``s. Collect every chunk, then keep only the
+    "leaves" — chunks that no other chunk extends as a longer prefix. This
+    collapses each cumulative snapshot stream down to its final form while
+    preserving distinct sentences.
+    """
+    out: list[str] = []
+    for i, c in enumerate(chunks):
+        extended = any(
+            j != i and other != c and other.startswith(c)
+            for j, other in enumerate(chunks)
+        )
+        if not extended:
+            out.append(c)
+    # De-dupe identical chunks while preserving order.
+    seen: set[str] = set()
+    unique: list[str] = []
+    for c in out:
+        if c not in seen:
+            seen.add(c)
+            unique.append(c)
+    return unique
+
+
 class SessionLog:
     """Append-only JSONL session log.
 
@@ -132,23 +163,8 @@ class SessionLogProcessor(FrameProcessor):
 
     @staticmethod
     def _leaves(chunks: list[str]) -> list[str]:
-        """Return chunks not strictly extended by any other chunk in the list."""
-        out: list[str] = []
-        for i, c in enumerate(chunks):
-            extended = any(
-                j != i and other != c and other.startswith(c)
-                for j, other in enumerate(chunks)
-            )
-            if not extended:
-                out.append(c)
-        # De-dupe identical chunks while preserving order.
-        seen: set[str] = set()
-        unique: list[str] = []
-        for c in out:
-            if c not in seen:
-                seen.add(c)
-                unique.append(c)
-        return unique
+        """Backward-compat shim — delegates to the module-level function."""
+        return _leaves(chunks)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)

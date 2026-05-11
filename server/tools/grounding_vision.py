@@ -20,9 +20,9 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import sys
 from typing import Optional
 
+from tools._macos import is_macos, macos_only
 from tools.registry import REGISTRY, BaseTool
 from tools.capture import capture_path  # type: ignore
 from tools import vision
@@ -74,10 +74,6 @@ def _parse_coords(text: str) -> Optional[dict]:
     return None
 
 
-def _is_macos() -> bool:
-    return sys.platform == "darwin"
-
-
 _GROUNDING_PROMPT_TEMPLATE = (
     "You are a UI grounding assistant. The image is the user's full screen.\n"
     "Find this element: {instruction}\n\n"
@@ -115,8 +111,8 @@ class FindOnScreenTool(BaseTool):
     guidance = None  # the description carries enough context
 
     def execute(self, instruction: str) -> dict:
-        if not _is_macos():
-            return {"result": f"find_on_screen only works on macOS — current platform is {sys.platform}."}
+        if not is_macos():
+            return {"result": macos_only("find_on_screen")}
         if not instruction or not instruction.strip():
             return {"result": "find_on_screen needs a non-empty instruction."}
 

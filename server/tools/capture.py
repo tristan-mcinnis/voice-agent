@@ -11,27 +11,14 @@ interface. Thin backward-compat callables are re-exported from ``__init__.py``.
 from __future__ import annotations
 
 import subprocess
-import sys
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from tools._macos import is_macos, macos_only
 from tools.registry import REGISTRY, BaseTool
 from tools.vision import describe_image, no_vision_message
-
-
-# ---------------------------------------------------------------------------
-# macOS guards (duplicated from desktop.py — small, stable, not worth a shared
-# module)
-# ---------------------------------------------------------------------------
-
-def _is_macos() -> bool:
-    return sys.platform == "darwin"
-
-
-def _macos_only_msg(label: str) -> str:
-    return f"{label} only works on macOS — current platform is {sys.platform}."
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +160,8 @@ class CaptureFrontmostWindowTool(BaseTool):
     }
 
     def execute(self, question: str = "") -> dict:
-        if not _is_macos():
-            return {"result": _macos_only_msg("Window capture")}
+        if not is_macos():
+            return {"result": macos_only("Window capture")}
 
         prompt = question.strip() or "Briefly describe what's in this window."
 
@@ -223,8 +210,8 @@ class CaptureScreenRegionTool(BaseTool):
     def execute(
         self, x: int, y: int, width: int, height: int, question: str = ""
     ) -> dict:
-        if not _is_macos():
-            return {"result": _macos_only_msg("Region capture")}
+        if not is_macos():
+            return {"result": macos_only("Region capture")}
 
         prompt = question.strip() or "Briefly describe what's in this screen region."
 
@@ -255,8 +242,8 @@ class CaptureDisplayTool(BaseTool):
     }
 
     def execute(self, display: int = 1, question: str = "") -> dict:
-        if not _is_macos():
-            return {"result": _macos_only_msg("Display capture")}
+        if not is_macos():
+            return {"result": macos_only("Display capture")}
 
         prompt = question.strip() or f"Briefly describe what's on display {display}."
 
