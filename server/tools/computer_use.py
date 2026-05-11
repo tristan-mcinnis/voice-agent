@@ -12,9 +12,10 @@ Two complementary paths:
      ``press_key``, ``scroll`` — for apps with poor AX (Electron, canvas,
      games). The agent screenshots, reasons about coordinates, then acts.
 
-Mouse/keyboard input goes through pyautogui (lazy-imported, soft dep). AX
-enumeration goes through AppleScript via ``System Events`` — macOS helpers
-are shared via ``tools._macos``, not copy-pasted.
+Actuation (clicks, typing, keys, scroll, move) is delegated to the unified
+``ActuationBackend`` seam in ``tools.actuation_backend``.  That module handles
+pyautogui vs cua-driver selection, safety-gate checks, and macOS validation —
+one place, not six.
 """
 
 from __future__ import annotations
@@ -25,59 +26,22 @@ from typing import Optional
 
 from loguru import logger
 
-from tools._macos import is_macos, macos_only, osascript
+from tools._macos import is_macos, macos_only
+from tools.actuation_backend import get_actuation_backend
 from tools.ax_engine import AXEngine, AXElement
 from tools.registry import REGISTRY, BaseTool
-from tools.safety_gate import SafetyGate
 
 # Module-level instances — constructed once, shared by all computer-use tools.
-_gate = SafetyGate()
 _ax_engine = AXEngine()
 
 
-def _try_cua_backend():
-    """Return the configured cua backend, or None if native is selected /
-    the cua backend is unavailable.
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-    Each actuation tool calls this once at execute()-time. If config is
-    missing, the field defaults to ``native`` and we return None. If
-    ``backend: cua`` is set but cua-driver can't be started, we log a
-    warning and return None — the caller falls back to pyautogui.
-
-    This is the entire integration surface for cua in this file. Remove
-    this function and the ``cua = _try_cua_backend(); if cua: ...`` blocks
-    in each tool below to strip the integration cleanly.
-    """
-    try:
-        from config import get_config
-        backend = get_config().computer_use.backend
-    except Exception:
-        return None
-    if backend != "cua":
-        return None
-    try:
-        from tools.cua_backend import get_cua_backend, CuaBackendError
-        return get_cua_backend()
-    except Exception as exc:
-        logger.warning(
-            f"computer_use.backend=cua but cua-driver unavailable "
-            f"({type(exc).__name__}: {exc}); falling back to native."
-        )
-        return None
-
-
-def _import_pyautogui():
-    """Lazy import. Returns the module or raises ImportError with a clean msg."""
-    try:
-        import pyautogui
-    except ImportError as exc:
-        raise ImportError(
-            "pyautogui not installed. Run: pip install pyautogui"
-        ) from exc
-    # Disable the failsafe corner — voice users can't easily yank the mouse.
-    pyautogui.FAILSAFE = False
-    pyautogui.PAUSE = 0.05
-    return pyautogui
+def _resolve_element(index: int) -> Optional[AXElement]:
+    """Look up an element by index in the most recently listed process."""
+    return _ax_engine.resolve(index)
 
 
 # ---------------------------------------------------------------------------
@@ -152,11 +116,6 @@ class ListUIElementsTool(BaseTool):
         return display
 
 
-def _resolve_element(index: int) -> Optional[AXElement]:
-    """Look up an element by index in the most recently listed process."""
-    return _ax_engine.resolve(index)
-
-
 @REGISTRY.register
 class ClickElementTool(BaseTool):
     name = "click_element"
@@ -188,9 +147,6 @@ class ClickElementTool(BaseTool):
     def execute(self, index: int, double: bool = False, confirm: bool = False) -> str:
         if not is_macos():
             return macos_only("click_element")
-        gate = _gate.check(f"click element [{index}]", confirm)
-        if gate:
-            return gate
         elem = _resolve_element(index)
         if elem is None:
             return (
@@ -199,27 +155,8 @@ class ClickElementTool(BaseTool):
             )
         x, y = elem.center()
         label = elem.label or f"{elem.role.replace('AX', '')} at ({x},{y})"
-
-        cua = _try_cua_backend()
-        if cua is not None:
-            try:
-                cua.click(x, y, double=double)
-            except Exception as exc:
-                return f"Click failed (cua): {type(exc).__name__}: {exc}"
-            return f"{'Double-clicked' if double else 'Clicked'} [{index}] {label} (cua)"
-
-        try:
-            pg = _import_pyautogui()
-        except ImportError as exc:
-            return str(exc)
-        try:
-            if double:
-                pg.doubleClick(x, y)
-            else:
-                pg.click(x, y)
-        except Exception as exc:
-            return f"Click failed: {type(exc).__name__}: {exc}"
-        return f"{'Double-clicked' if double else 'Clicked'} [{index}] {label}"
+        result = get_actuation_backend().click(x, y, double=double, confirm=confirm)
+        return f"{result} [{index}] {label}"
 
 
 @REGISTRY.register
@@ -253,29 +190,7 @@ class ClickAtTool(BaseTool):
     def execute(self, x: int, y: int, double: bool = False, button: str = "left", confirm: bool = False) -> str:
         if not is_macos():
             return macos_only("click_at")
-        gate = _gate.check(f"click at ({x},{y})", confirm)
-        if gate:
-            return gate
-
-        cua = _try_cua_backend()
-        if cua is not None:
-            try:
-                return cua.click(x, y, double=double, button=button)
-            except Exception as exc:
-                return f"Click failed (cua): {type(exc).__name__}: {exc}"
-
-        try:
-            pg = _import_pyautogui()
-        except ImportError as exc:
-            return str(exc)
-        try:
-            if double:
-                pg.doubleClick(x, y, button=button)
-            else:
-                pg.click(x, y, button=button)
-        except Exception as exc:
-            return f"Click failed: {type(exc).__name__}: {exc}"
-        return f"{'Double-clicked' if double else 'Clicked'} ({x},{y}) [{button}]"
+        return get_actuation_backend().click(x, y, double=double, button=button, confirm=confirm)
 
 
 @REGISTRY.register
@@ -304,35 +219,7 @@ class TypeTextTool(BaseTool):
     def execute(self, text: str, interval: float = 0.02, confirm: bool = False) -> str:
         if not is_macos():
             return macos_only("type_text")
-        preview = text if len(text) <= 30 else text[:27] + "..."
-        gate = _gate.check(f"type {preview!r}", confirm)
-        if gate:
-            return gate
-
-        cua = _try_cua_backend()
-        if cua is not None:
-            try:
-                return cua.type_text(text, interval=interval)
-            except Exception as exc:
-                return f"Type failed (cua): {type(exc).__name__}: {exc}"
-
-        try:
-            pg = _import_pyautogui()
-        except ImportError as exc:
-            return str(exc)
-        try:
-            pg.typewrite(text, interval=interval)
-        except Exception as exc:
-            # pyautogui.typewrite can't handle non-ASCII — fall back to AppleScript.
-            try:
-                escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-                osascript(
-                    f'tell application "System Events" to keystroke "{escaped}"',
-                    timeout=10.0,
-                )
-            except Exception as exc2:
-                return f"Type failed: {type(exc).__name__}: {exc} (fallback: {exc2})"
-        return f"Typed {len(text)} character{'s' if len(text) != 1 else ''}."
+        return get_actuation_backend().type_text(text, interval=interval, confirm=confirm)
 
 
 @REGISTRY.register
@@ -360,32 +247,7 @@ class PressKeyTool(BaseTool):
     def execute(self, keys: str, confirm: bool = False) -> str:
         if not is_macos():
             return macos_only("press_key")
-        gate = _gate.check(f"press {keys}", confirm)
-        if gate:
-            return gate
-
-        cua = _try_cua_backend()
-        if cua is not None:
-            try:
-                return cua.press_key(keys)
-            except Exception as exc:
-                return f"Key press failed (cua): {type(exc).__name__}: {exc}"
-
-        try:
-            pg = _import_pyautogui()
-        except ImportError as exc:
-            return str(exc)
-        parts = [k.strip().lower() for k in keys.split("+") if k.strip()]
-        if not parts:
-            return "press_key: empty key string."
-        try:
-            if len(parts) == 1:
-                pg.press(parts[0])
-            else:
-                pg.hotkey(*parts)
-        except Exception as exc:
-            return f"Key press failed: {type(exc).__name__}: {exc}"
-        return f"Pressed {keys}."
+        return get_actuation_backend().press_key(keys, confirm=confirm)
 
 
 @REGISTRY.register
@@ -414,33 +276,7 @@ class ScrollTool(BaseTool):
     def execute(self, amount: int, x: Optional[int] = None, y: Optional[int] = None, confirm: bool = False) -> str:
         if not is_macos():
             return macos_only("scroll")
-        gate = _gate.check(f"scroll {amount:+d}", confirm)
-        if gate:
-            return gate
-
-        cua = _try_cua_backend()
-        if cua is not None:
-            try:
-                result = cua.scroll(amount, x=x, y=y)
-            except Exception as exc:
-                return f"Scroll failed (cua): {type(exc).__name__}: {exc}"
-            time.sleep(0.15)
-            return result
-
-        try:
-            pg = _import_pyautogui()
-        except ImportError as exc:
-            return str(exc)
-        try:
-            if x is not None and y is not None:
-                pg.scroll(amount, x=x, y=y)
-            else:
-                pg.scroll(amount)
-        except Exception as exc:
-            return f"Scroll failed: {type(exc).__name__}: {exc}"
-        # Give the UI a beat to settle before the next AX listing.
-        time.sleep(0.15)
-        return f"Scrolled {amount:+d}{f' at ({x},{y})' if x is not None else ''}."
+        return get_actuation_backend().scroll(amount, x=x, y=y, confirm=confirm)
 
 
 @REGISTRY.register
@@ -480,9 +316,6 @@ class ShortcatClickTool(BaseTool):
     def execute(self, label: str, confirm: bool = False) -> str:
         if not is_macos():
             return macos_only("shortcat_click")
-        gate = _gate.check(f"shortcat_click {label!r}", confirm)
-        if gate:
-            return gate
 
         # Lazy config import — keeps this tool's dependencies isolated and
         # leaves the rest of the registry usable when config.yaml is absent.
@@ -507,9 +340,9 @@ class ShortcatClickTool(BaseTool):
             pass
 
         try:
-            pg = _import_pyautogui()
+            import pyautogui as pg
         except ImportError as exc:
-            return str(exc)
+            return f"pyautogui not installed: {exc}"
 
         parts = [k.strip().lower() for k in cfg.hotkey.split("+") if k.strip()]
         if not parts:
@@ -552,23 +385,7 @@ class MouseMoveTool(BaseTool):
     def execute(self, x: int, y: int, duration: float = 0.1) -> str:
         if not is_macos():
             return macos_only("mouse_move")
-
-        cua = _try_cua_backend()
-        if cua is not None:
-            try:
-                return cua.mouse_move(x, y, duration=duration)
-            except Exception as exc:
-                return f"Move failed (cua): {type(exc).__name__}: {exc}"
-
-        try:
-            pg = _import_pyautogui()
-        except ImportError as exc:
-            return str(exc)
-        try:
-            pg.moveTo(x, y, duration=duration)
-        except Exception as exc:
-            return f"Move failed: {type(exc).__name__}: {exc}"
-        return f"Moved to ({x},{y})."
+        return get_actuation_backend().mouse_move(x, y, duration=duration)
 
 
 @REGISTRY.register

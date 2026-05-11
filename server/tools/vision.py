@@ -1,11 +1,11 @@
 """Vision description chain — image preparation, provider dispatch, reasoning stripping.
 
-Walk the `vision:` list from `config.yaml` in order; the first provider that
-returns text wins. A provider is skipped if its `api_key_env` is set but the
+Walk the ``vision:`` list from ``config.yaml`` in order; the first provider that
+returns text wins. A provider is skipped if its ``api_key_env`` is set but the
 env var is missing, or if its call raises any error.
 
-No tool classes here — tools in `desktop.py` and `capture.py` call
-`describe_image()` and `no_vision_message()` through this module.
+No tool classes here — tools in ``desktop.py`` and ``capture.py`` call
+``describe_image()`` and ``no_vision_message()`` through this module.
 """
 
 from __future__ import annotations
@@ -184,20 +184,24 @@ def strip_reasoning(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Provider dispatch
+# Provider adapters — one per kind, behind a common interface
 # ---------------------------------------------------------------------------
 
-def try_describe_with(provider: Any, image_path: str, prompt: str) -> str | None:
-    """Attempt one vision provider. Returns text on success, None on any failure.
+class VisionProviderAdapter:
+    """Describe an image using a specific vision backend.
 
-    `provider` is a `config.VisionProvider` instance.
+    Returns text on success, ``None`` on any failure (including missing deps,
+    missing keys, or runtime errors).
     """
-    full_prompt = (
-        f"{prompt}\n\n{provider.brevity_suffix}".strip()
-        if provider.brevity_suffix else prompt
-    )
 
-    if provider.kind == "mlx":
+    def describe(self, provider: Any, image_path: str, prompt: str) -> str | None:
+        raise NotImplementedError
+
+
+class MLXVisionAdapter(VisionProviderAdapter):
+    """In-process MLX vision. Requires ``mlx_vlm`` and Apple Silicon."""
+
+    def describe(self, provider: Any, image_path: str, prompt: str) -> str | None:
         try:
             import tools.mlx_vision as mlx_vision
         except ImportError:
@@ -207,7 +211,7 @@ def try_describe_with(provider: Any, image_path: str, prompt: str) -> str | None
         try:
             t0 = time.monotonic()
             text = strip_reasoning(mlx_vision.describe(
-                provider.model, small_path, full_prompt,
+                provider.model, small_path, prompt,
                 max_tokens=provider.max_tokens,
             ))
             elapsed = time.monotonic() - t0
@@ -221,63 +225,92 @@ def try_describe_with(provider: Any, image_path: str, prompt: str) -> str | None
             logger.warning(f"vision: {provider.name} failed: {exc}")
             return None
 
-    # kind == "openai" (default): OpenAI-compatible HTTP endpoint.
-    from openai import OpenAI
 
-    if provider.api_key_env:
-        api_key = os.getenv(provider.api_key_env)
-        if not api_key:
-            logger.info(
-                f"vision: skipping {provider.name} — {provider.api_key_env} unset"
-            )
-            return None
-    else:
-        api_key = "no-auth"
+class OpenAIVisionAdapter(VisionProviderAdapter):
+    """OpenAI-compatible HTTP endpoint. Works for OpenAI, Kimi, LM Studio, etc."""
 
-    b64, ext = _prepare_image(image_path, provider.max_image_width)
+    def describe(self, provider: Any, image_path: str, prompt: str) -> str | None:
+        from openai import OpenAI
 
-    client = OpenAI(
-        api_key=api_key, base_url=provider.base_url,
-        max_retries=0, timeout=provider.timeout,
+        if provider.api_key_env:
+            api_key = os.getenv(provider.api_key_env)
+            if not api_key:
+                logger.info(
+                    f"vision: skipping {provider.name} — {provider.api_key_env} unset"
+                )
+                return None
+        else:
+            api_key = "no-auth"
+
+        b64, ext = _prepare_image(image_path, provider.max_image_width)
+
+        client = OpenAI(
+            api_key=api_key, base_url=provider.base_url,
+            max_retries=0, timeout=provider.timeout,
+        )
+
+        last_exc = None
+        for attempt in range(2):
+            try:
+                t0 = time.monotonic()
+                resp = client.chat.completions.create(
+                    model=provider.model,
+                    messages=[{
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {
+                                "url": f"data:image/{ext};base64,{b64}",
+                            }},
+                            {"type": "text", "text": prompt},
+                        ],
+                    }],
+                    max_tokens=provider.max_tokens,
+                )
+                elapsed = time.monotonic() - t0
+                msg = resp.choices[0].message
+                content = (msg.content or "").strip()
+                reasoning = (getattr(msg, "reasoning_content", "") or "").strip()
+                text = strip_reasoning(content or reasoning)
+                logger.info(
+                    f"vision: {provider.name}/{provider.model} "
+                    f"img_kb={len(b64)*3//4//1024} out_chars={len(text)} "
+                    f"src={'content' if content else 'reasoning'} "
+                    f"elapsed={elapsed:.1f}s"
+                )
+                return text or None
+            except Exception as exc:
+                last_exc = exc
+                if attempt == 0 and "overload" in str(exc).lower():
+                    time.sleep(2.0)
+                    continue
+                break
+        logger.warning(f"vision: {provider.name} failed: {last_exc}")
+        return None
+
+
+# Dispatch table — add new adapters here.
+_VISION_ADAPTERS: dict[str, VisionProviderAdapter] = {
+    "mlx": MLXVisionAdapter(),
+    "openai": OpenAIVisionAdapter(),
+}
+
+
+def try_describe_with(provider: Any, image_path: str, prompt: str) -> str | None:
+    """Attempt one vision provider. Returns text on success, None on any failure.
+
+    ``provider`` is a ``config.VisionProvider`` instance.
+    """
+    full_prompt = (
+        f"{prompt}\n\n{provider.brevity_suffix}".strip()
+        if provider.brevity_suffix else prompt
     )
 
-    last_exc = None
-    for attempt in range(2):
-        try:
-            t0 = time.monotonic()
-            resp = client.chat.completions.create(
-                model=provider.model,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {
-                            "url": f"data:image/{ext};base64,{b64}",
-                        }},
-                        {"type": "text", "text": full_prompt},
-                    ],
-                }],
-                max_tokens=provider.max_tokens,
-            )
-            elapsed = time.monotonic() - t0
-            msg = resp.choices[0].message
-            content = (msg.content or "").strip()
-            reasoning = (getattr(msg, "reasoning_content", "") or "").strip()
-            text = strip_reasoning(content or reasoning)
-            logger.info(
-                f"vision: {provider.name}/{provider.model} "
-                f"img_kb={len(b64)*3//4//1024} out_chars={len(text)} "
-                f"src={'content' if content else 'reasoning'} "
-                f"elapsed={elapsed:.1f}s"
-            )
-            return text or None
-        except Exception as exc:
-            last_exc = exc
-            if attempt == 0 and "overload" in str(exc).lower():
-                time.sleep(2.0)
-                continue
-            break
-    logger.warning(f"vision: {provider.name} failed: {last_exc}")
-    return None
+    adapter = _VISION_ADAPTERS.get(provider.kind)
+    if adapter is None:
+        logger.warning(f"vision: unknown provider kind {provider.kind!r}")
+        return None
+
+    return adapter.describe(provider, image_path, full_prompt)
 
 
 def describe_image(image_path: str, prompt: str) -> str | None:
