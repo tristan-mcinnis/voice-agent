@@ -23,6 +23,8 @@ import subprocess
 import time
 from typing import Optional
 
+from loguru import logger
+
 from tools._macos import is_macos, macos_only, osascript
 from tools.ax_engine import AXEngine, AXElement
 from tools.registry import REGISTRY, BaseTool
@@ -31,6 +33,37 @@ from tools.safety_gate import SafetyGate
 # Module-level instances — constructed once, shared by all computer-use tools.
 _gate = SafetyGate()
 _ax_engine = AXEngine()
+
+
+def _try_cua_backend():
+    """Return the configured cua backend, or None if native is selected /
+    the cua backend is unavailable.
+
+    Each actuation tool calls this once at execute()-time. If config is
+    missing, the field defaults to ``native`` and we return None. If
+    ``backend: cua`` is set but cua-driver can't be started, we log a
+    warning and return None — the caller falls back to pyautogui.
+
+    This is the entire integration surface for cua in this file. Remove
+    this function and the ``cua = _try_cua_backend(); if cua: ...`` blocks
+    in each tool below to strip the integration cleanly.
+    """
+    try:
+        from config import get_config
+        backend = get_config().computer_use.backend
+    except Exception:
+        return None
+    if backend != "cua":
+        return None
+    try:
+        from tools.cua_backend import get_cua_backend, CuaBackendError
+        return get_cua_backend()
+    except Exception as exc:
+        logger.warning(
+            f"computer_use.backend=cua but cua-driver unavailable "
+            f"({type(exc).__name__}: {exc}); falling back to native."
+        )
+        return None
 
 
 def _import_pyautogui():
@@ -164,11 +197,21 @@ class ClickElementTool(BaseTool):
                 f"No element with index {index}. Call list_ui_elements first, "
                 "or the index is out of range."
             )
+        x, y = elem.center()
+        label = elem.label or f"{elem.role.replace('AX', '')} at ({x},{y})"
+
+        cua = _try_cua_backend()
+        if cua is not None:
+            try:
+                cua.click(x, y, double=double)
+            except Exception as exc:
+                return f"Click failed (cua): {type(exc).__name__}: {exc}"
+            return f"{'Double-clicked' if double else 'Clicked'} [{index}] {label} (cua)"
+
         try:
             pg = _import_pyautogui()
         except ImportError as exc:
             return str(exc)
-        x, y = elem.center()
         try:
             if double:
                 pg.doubleClick(x, y)
@@ -176,7 +219,6 @@ class ClickElementTool(BaseTool):
                 pg.click(x, y)
         except Exception as exc:
             return f"Click failed: {type(exc).__name__}: {exc}"
-        label = elem.label or f"{elem.role.replace('AX', '')} at ({x},{y})"
         return f"{'Double-clicked' if double else 'Clicked'} [{index}] {label}"
 
 
@@ -214,6 +256,14 @@ class ClickAtTool(BaseTool):
         gate = _gate.check(f"click at ({x},{y})", confirm)
         if gate:
             return gate
+
+        cua = _try_cua_backend()
+        if cua is not None:
+            try:
+                return cua.click(x, y, double=double, button=button)
+            except Exception as exc:
+                return f"Click failed (cua): {type(exc).__name__}: {exc}"
+
         try:
             pg = _import_pyautogui()
         except ImportError as exc:
@@ -258,6 +308,14 @@ class TypeTextTool(BaseTool):
         gate = _gate.check(f"type {preview!r}", confirm)
         if gate:
             return gate
+
+        cua = _try_cua_backend()
+        if cua is not None:
+            try:
+                return cua.type_text(text, interval=interval)
+            except Exception as exc:
+                return f"Type failed (cua): {type(exc).__name__}: {exc}"
+
         try:
             pg = _import_pyautogui()
         except ImportError as exc:
@@ -305,6 +363,14 @@ class PressKeyTool(BaseTool):
         gate = _gate.check(f"press {keys}", confirm)
         if gate:
             return gate
+
+        cua = _try_cua_backend()
+        if cua is not None:
+            try:
+                return cua.press_key(keys)
+            except Exception as exc:
+                return f"Key press failed (cua): {type(exc).__name__}: {exc}"
+
         try:
             pg = _import_pyautogui()
         except ImportError as exc:
@@ -351,6 +417,16 @@ class ScrollTool(BaseTool):
         gate = _gate.check(f"scroll {amount:+d}", confirm)
         if gate:
             return gate
+
+        cua = _try_cua_backend()
+        if cua is not None:
+            try:
+                result = cua.scroll(amount, x=x, y=y)
+            except Exception as exc:
+                return f"Scroll failed (cua): {type(exc).__name__}: {exc}"
+            time.sleep(0.15)
+            return result
+
         try:
             pg = _import_pyautogui()
         except ImportError as exc:
@@ -476,6 +552,14 @@ class MouseMoveTool(BaseTool):
     def execute(self, x: int, y: int, duration: float = 0.1) -> str:
         if not is_macos():
             return macos_only("mouse_move")
+
+        cua = _try_cua_backend()
+        if cua is not None:
+            try:
+                return cua.mouse_move(x, y, duration=duration)
+            except Exception as exc:
+                return f"Move failed (cua): {type(exc).__name__}: {exc}"
+
         try:
             pg = _import_pyautogui()
         except ImportError as exc:
@@ -485,3 +569,40 @@ class MouseMoveTool(BaseTool):
         except Exception as exc:
             return f"Move failed: {type(exc).__name__}: {exc}"
         return f"Moved to ({x},{y})."
+
+
+@REGISTRY.register
+class CuaStatusTool(BaseTool):
+    name = "cua_status"
+    category = "system"
+    description = (
+        "Report whether the cua-driver actuation backend is reachable. Prints "
+        "the configured backend, the cua-driver binary path, and the live MCP "
+        "tool inventory. Use to verify the cua integration before flipping "
+        "computer_use.backend in config.yaml."
+    )
+
+    def execute(self) -> str:
+        try:
+            from config import get_config
+            cfg = get_config().computer_use
+        except Exception as exc:
+            return f"computer_use config unavailable: {type(exc).__name__}: {exc}"
+
+        lines = [
+            f"configured backend: {cfg.backend}",
+            f"cua binary: {cfg.cua_binary}",
+            f"rpc timeout: {cfg.cua_timeout}s",
+        ]
+        try:
+            from tools.cua_backend import get_cua_backend
+            backend = get_cua_backend()
+        except Exception as exc:
+            lines.append(f"cua-driver: UNREACHABLE ({type(exc).__name__}: {exc})")
+            return "\n".join(lines)
+
+        names = backend.tool_names()
+        lines.append(f"cua-driver: OK, {len(names)} tool(s) exposed")
+        if names:
+            lines.append("tools: " + ", ".join(names))
+        return "\n".join(lines)

@@ -202,6 +202,31 @@ Defines 11 domain terms: Turn, Wake Word, Echo Suppression, Mute Strategy,
 Vision Chain, Session Log, Tool, Pipeline Processor, Connection Rendezvous,
 Interruption, AEC, Provider. Use these terms in code and docs.
 
+### Computer-use backends
+
+Actuation tools in `tools/computer_use.py` (`click_at`, `type_text`,
+`press_key`, `scroll`, `mouse_move`, and the click side of `click_element`)
+have a swappable backend, controlled by `computer_use.backend` in
+`config.yaml`:
+
+- `native` (default) — pyautogui. Works everywhere; steals cursor/focus.
+- `cua` — routes calls through `cua-driver` (trycua/cua), a Swift MCP
+  server that drives macOS without stealing cursor/focus. One-time install:
+
+      brew tap trycua/cua && brew install cua-driver
+      which cua-driver   # verify on PATH
+
+  Call the `cua_status` tool from a session to confirm the handshake and
+  inspect the live MCP tool inventory. If `backend: cua` is set but the
+  binary is missing or the handshake fails, each call logs a warning and
+  falls back to pyautogui — the bot stays usable.
+
+The integration lives entirely in `tools/cua_backend.py` (stdlib-only
+MCP-stdio client) plus a small `_try_cua_backend()` resolver at the top of
+`tools/computer_use.py`. Read-only desktop tools in `tools/desktop.py` are
+unaffected — they stay on AppleScript regardless of backend. Removal steps
+are documented in the `cua_backend.py` module docstring.
+
 ### ADRs (`server/docs/adr/`)
 
 - ADR-0001 — Soniox for STT and TTS
