@@ -72,7 +72,14 @@ async def main():
         ]
     )
 
-    task = PipelineTask(pipeline, params=PipelineParams(enable_metrics=True))
+    # `enable_usage_metrics` is *separate* from `enable_metrics` and defaults
+    # to False — without it, LLM token-usage MetricsFrames are never pushed
+    # and the post-LLM SessionLogProcessor never sees them. That makes the
+    # cache-hit logging silently report nothing.
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(enable_metrics=True, enable_usage_metrics=True),
+    )
 
     policy.install_lifecycle(
         stt=components.stt,

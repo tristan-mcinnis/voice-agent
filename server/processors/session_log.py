@@ -205,7 +205,14 @@ class SessionLogProcessor(FrameProcessor):
         elif isinstance(frame, LLMFullResponseEndFrame):
             self._log.event("llm-response-ended")
         elif isinstance(frame, BotStartedSpeakingFrame):
-            self._bot_chunks.clear()
+            # Intentionally do NOT clear self._bot_chunks here. The LLM emits
+            # all of its (LLM)TextFrames downstream BEFORE the TTS triggers
+            # BotStartedSpeakingFrame upstream — so any clear-on-start drops
+            # the very text we want to log. The buffer is cleared after
+            # emitting on BotStoppedSpeakingFrame, which is the natural
+            # turn boundary even under interruption (Pipecat emits stopped
+            # on cancel too).
+            pass
         elif isinstance(frame, TranscriptionFrame):
             text = (frame.text or "").strip()
             if text:
