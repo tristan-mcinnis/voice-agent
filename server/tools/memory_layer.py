@@ -26,6 +26,8 @@ Usage::
 
 from __future__ import annotations
 
+import os
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -95,12 +97,33 @@ def _load_entries(path: Path) -> list[str]:
 
 
 def _save_entries(path: Path, entries: list[str]) -> None:
-    """Write entries back, joined by §. Creates parent dirs as needed."""
+    """Write entries back atomically — temp file, fsync, rename.
+
+    A non-atomic ``write_text`` could leave the file empty or truncated if
+    the process is killed mid-write, and the next session would load an
+    empty MEMORY.md / USER.md into the system prompt. The temp-then-rename
+    pattern means the on-disk file is either fully the old version or
+    fully the new one — never partial.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     content = "\n§\n".join(entries).strip()
     if content:
         content += "\n"
-    path.write_text(content, encoding="utf-8")
+
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        # Clean up the temp file so we don't litter on errors.
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def _total_chars(entries: list[str]) -> int:
@@ -122,6 +145,11 @@ class MemoryLayer:
     def __init__(self, base_path: Optional[Path] = None) -> None:
         self.base_path = (base_path or _default_memories_dir()).expanduser().resolve()
         self.base_path.mkdir(parents=True, exist_ok=True)
+        # The LLM can dispatch multiple tool calls in a single turn; each
+        # tool runs in its own ``asyncio.to_thread`` worker. Without a lock,
+        # two concurrent memory.add calls would each read the same starting
+        # state and one update would be silently lost.
+        self._write_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Read API (for PromptBuilder)
@@ -171,7 +199,16 @@ class MemoryLayer:
         }
 
     def add(self, target: str, content: str) -> dict:
-        """Add an entry with near-duplicate detection and pressure check."""
+        """Add an entry with near-duplicate detection and pressure check.
+
+        The read-then-write is serialised by ``_write_lock`` so two
+        concurrent tool calls can't read the same starting state and
+        clobber each other's updates.
+        """
+        with self._write_lock:
+            return self._add_locked(target, content)
+
+    def _add_locked(self, target: str, content: str) -> dict:
         path = self._path_for(target)
         entries = _load_entries(path)
         limit = _limit_for(target)
@@ -222,7 +259,16 @@ class MemoryLayer:
         }
 
     def replace(self, target: str, content: str, old_text: str = "") -> dict:
-        """Replace an entry matched by ``old_text`` substring."""
+        """Replace an entry matched by ``old_text`` substring.
+
+        Serialised by ``_write_lock`` against concurrent add/replace.
+        """
+        with self._write_lock:
+            return self._replace_locked(target, content, old_text)
+
+    def _replace_locked(
+        self, target: str, content: str, old_text: str = "",
+    ) -> dict:
         path = self._path_for(target)
         entries = _load_entries(path)
         label = self._label_for(target)

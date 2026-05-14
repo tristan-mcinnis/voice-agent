@@ -164,3 +164,71 @@ class TestMemoryPressure:
         self.layer.replace("user", content="z" * (USER_CHAR_LIMIT - 10), old_text="x" * 10)
         result = self.layer.list_entries("user")
         assert "z" * 50 in result["result"]
+
+
+class TestAtomicWrite:
+    """Verify temp-file + rename semantics: writes are all-or-nothing."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        monkeypatch.setenv("VOICE_AGENT_HOME", self._tmpdir.name)
+        self.layer = MemoryLayer()
+        yield
+        self._tmpdir.cleanup()
+
+    def test_no_temp_file_left_behind_after_success(self):
+        self.layer.add("user", "first")
+        self.layer.add("user", "second")
+        # Temp files use leading-dot prefix. None should remain.
+        leftovers = list(self.layer.base_path.glob(".*.tmp.*"))
+        assert leftovers == []
+
+    def test_write_failure_preserves_old_file(self, monkeypatch):
+        # Establish a known-good state.
+        self.layer.add("user", "original entry")
+        path = self.layer.base_path / "USER.md"
+        original = path.read_text()
+
+        # Force the next save to fail mid-flight (after fsync, before rename).
+        import tools.memory_layer as ml
+        real_replace = ml.os.replace
+        def boom(*args, **kwargs):
+            raise OSError("simulated disk error")
+        monkeypatch.setattr(ml.os, "replace", boom)
+
+        with pytest.raises(OSError):
+            self.layer.add("user", "doomed entry")
+
+        # Old file content is untouched.
+        assert path.read_text() == original
+        # Restore and verify recovery works.
+        monkeypatch.setattr(ml.os, "replace", real_replace)
+        self.layer.add("user", "recovered")
+        assert "recovered" in path.read_text()
+
+
+class TestConcurrency:
+    """Concurrent add/replace should never lose updates."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        monkeypatch.setenv("VOICE_AGENT_HOME", self._tmpdir.name)
+        self.layer = MemoryLayer()
+        yield
+        self._tmpdir.cleanup()
+
+    def test_parallel_adds_all_succeed(self):
+        """20 threads each add a distinct entry — all 20 land."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        def do_add(i: int) -> None:
+            self.layer.add("memory", f"entry-{i:03d}")
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(do_add, range(20)))
+
+        entries = _load_entries(self.layer.base_path / "MEMORY.md")
+        # Every entry shows up exactly once.
+        assert sorted(entries) == sorted(f"entry-{i:03d}" for i in range(20))
