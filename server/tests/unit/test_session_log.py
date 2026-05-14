@@ -1,7 +1,35 @@
 """Unit tests for SessionLogProcessor._leaves() — dedup logic, no pipeline."""
 
 import pytest
-from processors.session_log import SessionLogProcessor
+from processors.session_log import SessionLogProcessor, _smart_join
+
+
+class TestSmartJoin:
+    def test_per_token_chunks_no_phantom_spaces(self):
+        # The bug exposed by the live run on 2026-05-14: ``" ".join`` produced
+        # ``"Hi , Tristan ."`` because each token was a distinct chunk.
+        chunks = ["Hi", ",", " Tristan", "."]
+        assert _smart_join(chunks) == "Hi, Tristan."
+
+    def test_distinct_sentences_get_spaces(self):
+        chunks = ["Hello.", "How are you?", "I'm doing well."]
+        assert _smart_join(chunks) == "Hello. How are you? I'm doing well."
+
+    def test_single_chunk_passthrough(self):
+        assert _smart_join(["I'm Your friendly assistant."]) == "I'm Your friendly assistant."
+
+    def test_empty_input(self):
+        assert _smart_join([]) == ""
+
+    def test_skips_empty_chunks(self):
+        assert _smart_join(["Hi", "", "there"]) == "Hi there"
+
+    def test_closing_punct_no_leading_space(self):
+        # Closing brackets / quotes shouldn't get pushed away from the word.
+        assert _smart_join(["He said", " \"hi\""]) == "He said \"hi\""
+
+    def test_chunk_already_ends_with_space(self):
+        assert _smart_join(["Hi ", "there"]) == "Hi there"
 
 
 class TestLeaves:

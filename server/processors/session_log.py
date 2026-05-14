@@ -58,6 +58,40 @@ DEFAULT_LOG_DIR = Path(os.getenv("VOICE_BOT_LOG_DIR", "logs"))
 # Pure logic — testable without a pipeline
 # ---------------------------------------------------------------------------
 
+_NO_LEADING_SPACE_CHARS = frozenset(",.!?;:)]}\"'")
+
+
+def _smart_join(chunks: list[str]) -> str:
+    """Concatenate text chunks the way a reader would expect.
+
+    Pipecat LLM services may stream either:
+      - cumulative snapshots (``"I'm"`` → ``"I'm Your"`` → ``"I'm Your friend"``)
+        that ``_leaves()`` collapses to one chunk containing its own internal
+        whitespace — joining with ``" "`` is fine.
+      - per-token deltas (``"Hi"``, ``","``, ``" Tristan"``, ``"."``) with their
+        own leading whitespace baked in — joining with ``" "`` injects phantom
+        spaces like ``"Hi , Tristan ."``.
+
+    The fix: insert a space between two chunks only when the right chunk
+    *needs* one — i.e. it doesn't start with whitespace or closing
+    punctuation, and the left chunk doesn't already end with whitespace.
+    """
+    if not chunks:
+        return ""
+    out = chunks[0]
+    for c in chunks[1:]:
+        if not c:
+            continue
+        needs_space = (
+            bool(out)
+            and not out[-1].isspace()
+            and not c[0].isspace()
+            and c[0] not in _NO_LEADING_SPACE_CHARS
+        )
+        out += (" " + c) if needs_space else c
+    return out
+
+
 def _leaves(chunks: list[str]) -> list[str]:
     """Return chunks not strictly extended by any other chunk in the list.
 
@@ -218,7 +252,7 @@ class SessionLogProcessor(FrameProcessor):
             if text:
                 self._user_chunks.append(text)
         elif isinstance(frame, UserStoppedSpeakingFrame):
-            text = " ".join(self._leaves(self._user_chunks)).strip()
+            text = _smart_join(self._leaves(self._user_chunks)).strip()
             self._user_chunks.clear()
             if text:
                 self._log.event("user-spoke", text=text)
@@ -227,7 +261,7 @@ class SessionLogProcessor(FrameProcessor):
             if text:
                 self._bot_chunks.append(text)
         elif isinstance(frame, BotStoppedSpeakingFrame):
-            text = " ".join(self._leaves(self._bot_chunks)).strip()
+            text = _smart_join(self._leaves(self._bot_chunks)).strip()
             self._bot_chunks.clear()
             if text:
                 self._log.event("bot-spoke", text=text)
