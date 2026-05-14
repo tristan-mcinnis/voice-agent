@@ -107,12 +107,24 @@ def build_tts(config: Config) -> SonioxTTSService:
 
 
 def build_llm(config: Config) -> OpenAILLMService:
-    """Construct the LLM service from config. Public — usable in tests."""
+    """Construct the LLM service from config. Public — usable in tests.
+
+    When ``llm.provider == "deepseek"``, returns a ``DeepSeekLLMService``
+    so that DeepSeek's flat ``prompt_cache_hit_tokens`` is surfaced into
+    the OpenAI-standard ``cache_read_input_tokens`` metric — otherwise
+    the cache stats in session logs would always be ``null``.
+    """
     cfg = config.llm
-    return OpenAILLMService(
+    service_cls: type[OpenAILLMService]
+    if cfg.provider.lower() == "deepseek":
+        from services.deepseek_llm import DeepSeekLLMService
+        service_cls = DeepSeekLLMService
+    else:
+        service_cls = OpenAILLMService
+    return service_cls(
         api_key=require_api_key(cfg.api_key_env, for_what=f"{cfg.provider} LLM"),
         base_url=cfg.base_url,
-        settings=OpenAILLMService.Settings(model=cfg.model, extra=cfg.extra),
+        settings=service_cls.Settings(model=cfg.model, extra=cfg.extra),
     )
 
 

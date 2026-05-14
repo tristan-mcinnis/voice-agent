@@ -121,7 +121,13 @@ Key facts:
   `model="deepseek-v4-flash"` and reads `DEEPSEEK_API_KEY`. Thinking is
   explicitly disabled via `extra={"extra_body": {"thinking": {"type":
   "disabled"}}}` — leave it off unless you want first-token-latency cost
-  (kills voice UX). See ADR-0003.
+  (kills voice UX). See ADR-0003. When `llm.provider == "deepseek"`,
+  `voice_bot.build_llm` instantiates `services.deepseek_llm.DeepSeekLLMService`
+  (a thin subclass) which wraps the chunk stream to promote DeepSeek's flat
+  `usage.prompt_cache_hit_tokens` into the OpenAI-standard
+  `prompt_tokens_details.cached_tokens` — without it, the `llm-usage` session
+  event would always report `cache_read_input_tokens=null` even when caching
+  is working.
 - **TTS is Soniox**, not Cartesia. See ADR-0001. When
   `tts.stream_clauses: true`, the service's internal text aggregator is
   swapped (in `voice_bot.build_tts`) for `ClauseTextAggregator`

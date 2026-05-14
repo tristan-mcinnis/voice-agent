@@ -126,6 +126,10 @@ turn:
   # On any load/import failure, the bot logs a warning and stays on the
   # speech-timeout strategy — it never silently breaks.
   smart_turn_enabled: false
+  # How long to wait for both Soniox WebSockets (STT + TTS) to come up
+  # before logging which side failed. Without this the bot can hang
+  # forever silently on a bad API key. Set to 0 to disable.
+  connection_timeout_seconds: 15.0
 
 # Global desktop hotkeys. Uses pynput combo syntax. Requires macOS
 # Accessibility permission on first run.

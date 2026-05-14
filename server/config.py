@@ -127,6 +127,12 @@ class TurnConfig:
     #   pip install pipecat-ai[local-smart-turn]
     # Falls back to speech-timeout if the model fails to load.
     smart_turn_enabled: bool = False
+    # How long to wait for both Soniox WebSockets (STT + TTS) to connect
+    # before logging which side(s) failed. Without this the bot can hang
+    # silently forever on a bad API key or network blip. The bot still
+    # logs the failure but continues; this is observability, not
+    # auto-recovery.
+    connection_timeout_seconds: float = 15.0
 
 
 @dataclass(frozen=True)

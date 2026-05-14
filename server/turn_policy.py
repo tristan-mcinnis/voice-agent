@@ -231,8 +231,16 @@ class LocalAudioTurnPolicy:
         Pushes the seed context frame exactly once when both STT and TTS
         are connected — that triggers the bot's introduction.
         """
+        timeout = self.config.turn.connection_timeout_seconds
+
+        async def _on_rendezvous_timeout(pending: list[str]) -> None:
+            self.session_log.event("connection-timeout", pending=pending,
+                                   timeout_seconds=timeout)
+
         rendezvous = ConnectionRendezvous(
-            callback=context_aggregator.user().push_context_frame
+            callback=context_aggregator.user().push_context_frame,
+            timeout_seconds=timeout if timeout > 0 else None,
+            on_timeout=_on_rendezvous_timeout,
         )
 
         @stt.event_handler("on_connected")

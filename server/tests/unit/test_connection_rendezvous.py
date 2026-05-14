@@ -2,7 +2,64 @@
 
 import asyncio
 import pytest
-from connection_rendezvous import ConnectionRendezvous
+from connection_rendezvous import ConnectionRendezvous, pending_sides
+
+
+class TestPendingSides:
+    def test_both_pending(self):
+        assert pending_sides(False, False) == ["stt", "tts"]
+
+    def test_only_stt_ready(self):
+        assert pending_sides(True, False) == ["tts"]
+
+    def test_only_tts_ready(self):
+        assert pending_sides(False, True) == ["stt"]
+
+    def test_both_ready(self):
+        assert pending_sides(True, True) == []
+
+
+class TestTimeout:
+    def test_on_timeout_fires_with_pending(self):
+        timed_out_with: list[str] | None = None
+
+        async def fired():
+            raise AssertionError("callback should not fire")
+
+        async def on_timeout(pending):
+            nonlocal timed_out_with
+            timed_out_with = pending
+
+        async def run():
+            rv = ConnectionRendezvous(
+                callback=fired, timeout_seconds=0.05, on_timeout=on_timeout,
+            )
+            await rv.tts_ready()  # only one side
+            await asyncio.sleep(0.1)
+            assert timed_out_with == ["stt"]
+
+        asyncio.run(run())
+
+    def test_no_timeout_if_both_ready_first(self):
+        timed_out = False
+
+        async def fired():
+            pass
+
+        async def on_timeout(pending):
+            nonlocal timed_out
+            timed_out = True
+
+        async def run():
+            rv = ConnectionRendezvous(
+                callback=fired, timeout_seconds=0.05, on_timeout=on_timeout,
+            )
+            await rv.stt_ready()
+            await rv.tts_ready()
+            await asyncio.sleep(0.1)
+            assert timed_out is False
+
+        asyncio.run(run())
 
 
 class TestConnectionRendezvous:
