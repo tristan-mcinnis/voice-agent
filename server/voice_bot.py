@@ -83,12 +83,27 @@ def build_stt(config: Config) -> SonioxSTTService:
 
 
 def build_tts(config: Config) -> SonioxTTSService:
-    """Construct the TTS service from config. Public — usable in tests."""
+    """Construct the TTS service from config. Public — usable in tests.
+
+    When ``tts.stream_clauses`` is true, the service's internal text
+    aggregator is swapped for a ``ClauseTextAggregator`` so first-audio
+    fires at clause boundaries instead of full sentences.
+    """
     cfg = config.tts
-    return SonioxTTSService(
+    tts = SonioxTTSService(
         api_key=require_api_key(cfg.api_key_env, for_what="Soniox TTS"),
         settings=SonioxTTSService.Settings(voice=cfg.voice),
     )
+    if cfg.stream_clauses:
+        # Pipecat's TTSService instantiates its aggregator privately; swap it
+        # in-place. The aggregator inherits from BaseTextAggregator so the rest
+        # of the service uses it transparently.
+        from processors.clause_aggregator import ClauseTextAggregator
+        tts._text_aggregator = ClauseTextAggregator(
+            aggregation_type=tts._text_aggregator.aggregation_type,
+            min_words=cfg.clause_min_words,
+        )
+    return tts
 
 
 def build_llm(config: Config) -> OpenAILLMService:

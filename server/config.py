@@ -55,6 +55,13 @@ class TTSConfig:
     provider: str
     api_key_env: str
     voice: str
+    # When true, TTS starts speaking at clause boundaries (,;:—) instead of
+    # waiting for full sentences. Cuts first-audio latency on long answers
+    # at the cost of slightly choppier mid-sentence prosody.
+    stream_clauses: bool = False
+    # Minimum word count before a clause is released. Stops one-word clauses
+    # like "Hi," from being spoken in isolation.
+    clause_min_words: int = 3
 
 
 @dataclass(frozen=True)
@@ -114,6 +121,12 @@ class TurnConfig:
     # stops speaking. Compensates for speaker-bleed-into-mic without
     # hardware AEC. Raise if the bot keeps "hearing itself".
     echo_holdoff_seconds: float = 1.0
+    # When true, use Pipecat's smart-turn-v3 ONNX model to detect end of
+    # user turn instead of fixed silence timeout. Cuts ~300–500ms of dead
+    # air on definite-end utterances. Requires:
+    #   pip install pipecat-ai[local-smart-turn]
+    # Falls back to speech-timeout if the model fails to load.
+    smart_turn_enabled: bool = False
 
 
 @dataclass(frozen=True)

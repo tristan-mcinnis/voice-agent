@@ -63,6 +63,9 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
 from pipecat.turns.user_start.vad_user_turn_start_strategy import (
     VADUserTurnStartStrategy,
 )
+from pipecat.turns.user_stop.base_user_turn_stop_strategy import (
+    BaseUserTurnStopStrategy,
+)
 from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
     SpeechTimeoutUserTurnStopStrategy,
 )
@@ -70,7 +73,13 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from config import Config
 from connection_rendezvous import ConnectionRendezvous
-from processors import EchoSuppressor, SessionLog, SessionLogProcessor, WakeWordGate
+from processors import (
+    EchoSuppressor,
+    LatencyTracer,
+    SessionLog,
+    SessionLogProcessor,
+    WakeWordGate,
+)
 
 
 _DIAG_EVENTS = (
@@ -105,7 +114,11 @@ class LocalAudioTurnPolicy:
         )
         self.wake_gate = WakeWordGate(self.config.wake_word)
         self.log_proc_pre = SessionLogProcessor(self.session_log)
-        self.log_proc_post = SessionLogProcessor(self.session_log)
+        # post-LLM instance is the one that captures LLM usage MetricsFrames.
+        # Single owner so we don't double-count cache hits across the two
+        # SessionLogProcessor instances.
+        self.log_proc_post = SessionLogProcessor(self.session_log, track_usage=True)
+        self.latency_tracer = LatencyTracer(self.session_log)
 
     # ------------------------------------------------------------------
     # Aggregator params — mute + turn strategies for no-AEC transports
@@ -115,9 +128,15 @@ class LocalAudioTurnPolicy:
     def aggregator_params(self) -> LLMUserAggregatorParams:
         """Mute + turn strategies for mic-and-speakers transports.
 
-        Speech-timeout stop is simpler than the smart-turn ONNX model and
-        fires reliably on short replies.
+        Stop strategy is selected by ``config.turn.smart_turn_enabled``:
+          - false (default): ``SpeechTimeoutUserTurnStopStrategy`` — fixed
+            silence timeout. Simple, reliable, but adds ~500ms of dead air.
+          - true: smart-turn-v3 ONNX model wrapped in
+            ``TurnAnalyzerUserTurnStopStrategy``. Cuts dead air on
+            definite-end utterances. Falls back to speech-timeout if
+            ``pipecat-ai[local-smart-turn]`` isn't installed.
         """
+        stop_strategy = self._build_stop_strategy()
         return LLMUserAggregatorParams(
             user_mute_strategies=[
                 MuteUntilFirstBotCompleteUserMuteStrategy(),
@@ -125,13 +144,50 @@ class LocalAudioTurnPolicy:
             ],
             user_turn_strategies=UserTurnStrategies(
                 start=[VADUserTurnStartStrategy()],
-                stop=[
-                    SpeechTimeoutUserTurnStopStrategy(
-                        user_speech_timeout=self.config.turn.user_speech_timeout
-                    )
-                ],
+                stop=[stop_strategy],
             ),
         )
+
+    def _build_stop_strategy(self) -> BaseUserTurnStopStrategy:
+        """Return the turn-stop strategy implied by config.
+
+        Lazy-imports smart-turn deps so the default config doesn't require
+        ``pipecat-ai[local-smart-turn]``. On any import or load failure,
+        logs a warning and falls back to speech-timeout — the bot stays
+        usable.
+        """
+        speech_timeout = SpeechTimeoutUserTurnStopStrategy(
+            user_speech_timeout=self.config.turn.user_speech_timeout
+        )
+        if not self.config.turn.smart_turn_enabled:
+            return speech_timeout
+
+        try:
+            from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import (
+                LocalSmartTurnAnalyzerV3,
+            )
+            from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
+                TurnAnalyzerUserTurnStopStrategy,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"smart_turn_enabled=true but deps missing ({exc!s}); "
+                f"falling back to speech-timeout. Install with: "
+                f"pip install 'pipecat-ai[local-smart-turn]'"
+            )
+            return speech_timeout
+
+        try:
+            analyzer = LocalSmartTurnAnalyzerV3()
+        except Exception as exc:
+            logger.warning(
+                f"smart-turn-v3 failed to load ({exc!s}); "
+                f"falling back to speech-timeout."
+            )
+            return speech_timeout
+
+        logger.info("🧠 smart-turn-v3 enabled — using ONNX endpointer")
+        return TurnAnalyzerUserTurnStopStrategy(turn_analyzer=analyzer)
 
     # ------------------------------------------------------------------
     # Pipeline stages
@@ -148,7 +204,12 @@ class LocalAudioTurnPolicy:
 
     def processors_after_stt(self) -> list:
         """Stages between STT and the user aggregator."""
-        return [self.echo_suppressor, self.wake_gate, self.log_proc_pre]
+        return [
+            self.echo_suppressor,
+            self.wake_gate,
+            self.log_proc_pre,
+            self.latency_tracer,
+        ]
 
     def processors_post_llm(self) -> list:
         """Stages between the LLM and TTS."""

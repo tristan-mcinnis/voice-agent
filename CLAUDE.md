@@ -65,7 +65,8 @@ python local_bot.py                  # mic/speakers loop
 python tests/test_stt.py               # Soniox STT WebSocket smoke test (needs test_tts.wav)
 python tests/test_tts.py               # Soniox TTS WebSocket smoke test (writes test_tts.wav)
 python tests/test_tools.py             # Smoke-tests every tool in tools.REGISTRY
-python -m pytest tests/unit/ -v        # Pure-function unit tests (48 tests, no I/O)
+python -m pytest tests/unit/ -v        # Pure-function unit tests (142 tests, no I/O)
+python -m scripts.summarize_session logs/session-*.jsonl  # Aggregate per-session latency + cache stats
 ```
 
 ## Architecture
@@ -121,12 +122,24 @@ Key facts:
   explicitly disabled via `extra={"extra_body": {"thinking": {"type":
   "disabled"}}}` — leave it off unless you want first-token-latency cost
   (kills voice UX). See ADR-0003.
-- **TTS is Soniox**, not Cartesia. See ADR-0001.
+- **TTS is Soniox**, not Cartesia. See ADR-0001. When
+  `tts.stream_clauses: true`, the service's internal text aggregator is
+  swapped (in `voice_bot.build_tts`) for `ClauseTextAggregator`
+  (`processors/clause_aggregator.py`), which releases at clause boundaries
+  (`,;:—`) gated by `clause_min_words`. Pure logic
+  `next_release_index(text, min_words)` is unit-tested.
 - **STT is Soniox in-pipeline.**
 - **No AEC.** `LocalAudioTransport` has no echo cancellation, so the bot
   installs mute strategies + VAD-only turn-start + a connection rendezvous —
   all inlined in `local_bot.py` with the *why* documented inline. The
   experimental Speex AEC is archived in `experiments/aec/`.
+- **Turn-stop strategy is config-switched.** Default is
+  `SpeechTimeoutUserTurnStopStrategy` (fixed-silence endpointer). When
+  `turn.smart_turn_enabled: true`, `turn_policy._build_stop_strategy()`
+  lazy-loads `LocalSmartTurnAnalyzerV3` (ONNX) wrapped in
+  `TurnAnalyzerUserTurnStopStrategy`. Any import or model-load failure
+  logs a warning and falls back to speech-timeout — the bot stays usable
+  without `pipecat-ai[local-smart-turn]`.
 - **Echo suppressor.** `EchoSuppressor` (`processors/echo_suppressor.py`) sits
   between STT and WakeWordGate. It drops `TranscriptionFrame` and
   `InterimTranscriptionFrame` while the bot is speaking and for
@@ -190,6 +203,29 @@ Key facts:
   fallback is Kimi `kimi-k2.6` (a reasoning model — answer may arrive in
   `reasoning_content`; `tools.vision.strip_reasoning()` handles both). All
   vision capture tools accept an optional `question:` arg. See ADR-0002.
+- **Session summarizer.** `scripts/summarize_session.py` is a CLI that
+  reduces a session JSONL into one report: turn count, p50/p95/max for each
+  latency phase, total prompt/completion tokens, and cache-hit rate. Use it
+  to A/B `turn.smart_turn_enabled` or `tts.stream_clauses` — flip one flag,
+  run a session, diff the two reports. Invoke:
+  `python -m scripts.summarize_session logs/session-*.jsonl`.
+- **LLM cache-hit logging.** The post-LLM `SessionLogProcessor`
+  (constructed with `track_usage=True` in `turn_policy`) listens for
+  `MetricsFrame`s carrying `LLMUsageMetricsData` and emits one
+  `llm-usage` event per LLM call with `prompt_tokens`, `completion_tokens`,
+  `cache_read_input_tokens`, `cache_creation_input_tokens`,
+  `reasoning_tokens`. Only one instance tracks usage to avoid double-count.
+  This is the metric that tells you whether `PromptBuilder`'s frozen prefix
+  is actually being cached by DeepSeek/Kimi/etc.
+- **Latency tracer.** `LatencyTracer` (`processors/latency_tracer.py`) sits
+  alongside the post-STT SessionLogProcessor. It stamps each phase of a turn
+  (`user_stopped → llm_started → first_text → tts_started → first_audio →
+  bot_started`) and emits one `turn-latency` event per turn into the session
+  log, plus a `⏱` summary line to stderr. Pure logic
+  `compute_turn_latency(stamps) -> dict[str, float|None]` returns ms-deltas
+  and is unit-tested. Use these numbers to decide whether to invest in
+  smart-turn detection, clause-streaming TTS, or a faster LLM — don't
+  optimise without them.
 - **Session logs** are kebab-case JSONL written to `logs/session-<ts>.jsonl`
   by `processors/session_log.py`. Image captures are saved to
   `logs/captures/` as timestamped JPEGs; the session log records the

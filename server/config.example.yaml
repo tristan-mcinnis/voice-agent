@@ -29,6 +29,12 @@ tts:
   api_key_env: SONIOX_API_KEY
   voice: Mina   # Females: Maya, Nina, Emma, Claire, Grace, Mina.
                 # Males:   Daniel, Noah, Jack, Adrian, Owen, Kenji.
+  # When true, TTS starts speaking at clause boundaries (,;:—) instead of
+  # waiting for whole sentences. Cuts first-audio latency on long answers
+  # by ~200–400ms at the cost of slightly choppier mid-sentence prosody.
+  # Watch the `⏱  text→audio` line from the latency tracer to A/B it.
+  stream_clauses: false
+  clause_min_words: 3
 
 # Vision describer chain for take_screenshot / capture_webcam.
 # A list of providers tried in order — first one that returns text wins.
@@ -113,6 +119,13 @@ turn:
   # Raise if the bot keeps "hearing itself"; lower if it ignores you for too
   # long after it finishes a sentence.
   echo_holdoff_seconds: 1.0
+  # When true, use Pipecat's smart-turn-v3 ONNX endpointer model instead of a
+  # fixed silence timeout. The model predicts whether the user is *done* (vs.
+  # mid-thought), cutting ~300–500ms of dead air on definite-end utterances.
+  # Requires:  pip install 'pipecat-ai[local-smart-turn]'
+  # On any load/import failure, the bot logs a warning and stays on the
+  # speech-timeout strategy — it never silently breaks.
+  smart_turn_enabled: false
 
 # Global desktop hotkeys. Uses pynput combo syntax. Requires macOS
 # Accessibility permission on first run.

@@ -43,10 +43,12 @@ from pipecat.frames.frames import (
     Frame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    MetricsFrame,
     TextFrame,
     TranscriptionFrame,
     UserStoppedSpeakingFrame,
 )
+from pipecat.metrics.metrics import LLMUsageMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 DEFAULT_LOG_DIR = Path(os.getenv("VOICE_BOT_LOG_DIR", "logs"))
@@ -155,11 +157,16 @@ class SessionLogProcessor(FrameProcessor):
     final form while preserving distinct sentences.
     """
 
-    def __init__(self, session_log: SessionLog):
+    def __init__(self, session_log: SessionLog, *, track_usage: bool = False):
         super().__init__()
         self._log = session_log
         self._user_chunks: list[str] = []
         self._bot_chunks: list[str] = []
+        # Only one instance per pipeline should track LLM token usage —
+        # otherwise every MetricsFrame (which propagates to all processors)
+        # gets logged twice. Set ``track_usage=True`` on the post-LLM
+        # instance only.
+        self._track_usage = track_usage
 
     @staticmethod
     def _leaves(chunks: list[str]) -> list[str]:
@@ -193,5 +200,30 @@ class SessionLogProcessor(FrameProcessor):
             self._bot_chunks.clear()
             if text:
                 self._log.event("bot-spoke", text=text)
+        elif self._track_usage and isinstance(frame, MetricsFrame):
+            self._log_usage(frame)
 
         await self.push_frame(frame, direction)
+
+    def _log_usage(self, frame: MetricsFrame) -> None:
+        """Emit an ``llm-usage`` event for each LLM usage entry in the frame.
+
+        DeepSeek (and other OpenAI-compatible providers) report cache stats in
+        ``cache_read_input_tokens``. A non-zero value means the cognitive-stack
+        prefix is being reused — exactly what ``PromptBuilder`` is designed
+        to enable. ``cache_creation_input_tokens`` shows the first-turn cost
+        of seeding the cache.
+        """
+        for entry in frame.data:
+            if not isinstance(entry, LLMUsageMetricsData):
+                continue
+            usage = entry.value
+            self._log.event(
+                "llm-usage",
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
+                total_tokens=usage.total_tokens,
+                cache_read_input_tokens=usage.cache_read_input_tokens,
+                cache_creation_input_tokens=usage.cache_creation_input_tokens,
+                reasoning_tokens=usage.reasoning_tokens,
+            )
