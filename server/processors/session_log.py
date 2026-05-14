@@ -130,6 +130,30 @@ class SessionLog:
             payload = {k: v for k, v in fields.items() if k not in ("path",)}
             logger.info(f"[{event_name}] {payload}" if payload else f"[{event_name}]")
 
+    def record_config(self, config) -> None:
+        """Snapshot the active runtime config so the summariser can A/B sessions.
+
+        Only the dials that affect latency, prompt caching, or turn-taking go
+        in — these are the variables a user would actually compare across
+        sessions. Provider names are included so a future Soniox-vs-Deepgram
+        diff also lands cleanly.
+        """
+        self.event(
+            "session-config",
+            llm_provider=config.llm.provider,
+            llm_model=config.llm.model,
+            stt_provider=config.stt.provider,
+            tts_provider=config.tts.provider,
+            tts_voice=config.tts.voice,
+            stream_clauses=config.tts.stream_clauses,
+            clause_min_words=config.tts.clause_min_words,
+            user_speech_timeout=config.turn.user_speech_timeout,
+            echo_holdoff_seconds=config.turn.echo_holdoff_seconds,
+            smart_turn_enabled=config.turn.smart_turn_enabled,
+            connection_timeout_seconds=config.turn.connection_timeout_seconds,
+            wake_word_enabled=config.wake_word.enabled,
+        )
+
     def close(self) -> None:
         try:
             self.event("session-ended")

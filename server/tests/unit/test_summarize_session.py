@@ -91,6 +91,7 @@ class TestFormatReport:
         s = SessionSummary(
             path=Path("empty.jsonl"), turns=0, llm_calls=0, latency={},
             cache_read=0, cache_creation=0, prompt_total=0, completion_total=0,
+            config={},
         )
         out = format_report(s)
         assert "empty.jsonl" in out
@@ -103,7 +104,22 @@ class TestFormatReport:
         s = SessionSummary(
             path=Path("ok.jsonl"), turns=1, llm_calls=1, latency={},
             cache_read=900, cache_creation=100, prompt_total=1000,
-            completion_total=50,
+            completion_total=50, config={},
         )
         out = format_report(s)
         assert "90.0%" in out
+
+    def test_renders_config_line(self):
+        s = SessionSummary(
+            path=Path("ok.jsonl"), turns=1, llm_calls=0, latency={},
+            cache_read=0, cache_creation=0, prompt_total=0, completion_total=0,
+            config={
+                "llm_model": "deepseek-v4-flash", "tts_voice": "Mina",
+                "stream_clauses": True, "smart_turn_enabled": False,
+                "user_speech_timeout": 0.6,
+            },
+        )
+        out = format_report(s)
+        assert "stream_clauses=True" in out
+        assert "smart_turn=False" in out
+        assert "deepseek-v4-flash" in out

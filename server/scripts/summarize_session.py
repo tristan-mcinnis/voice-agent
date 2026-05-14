@@ -63,6 +63,7 @@ class SessionSummary:
     cache_creation: int
     prompt_total: int
     completion_total: int
+    config: dict          # session-config event payload (without ts/iso wrapper)
 
 
 def load_events(path: Path) -> list[dict]:
@@ -94,10 +95,18 @@ def percentile(values: list[float], pct: float) -> Optional[float]:
     return s[lo] + (s[hi] - s[lo]) * frac
 
 
+_CONFIG_NOISE_KEYS = {"ts", "iso", "session_id", "event"}
+
+
 def summarize(events: Iterable[dict], path: Path) -> SessionSummary:
     """Reduce a session's events into one SessionSummary."""
+    events = list(events)
     turns = [e for e in events if e.get("event") == "turn-latency"]
     usage = [e for e in events if e.get("event") == "llm-usage"]
+    cfg_events = [e for e in events if e.get("event") == "session-config"]
+    config: dict = {}
+    if cfg_events:
+        config = {k: v for k, v in cfg_events[0].items() if k not in _CONFIG_NOISE_KEYS}
 
     latency: dict[str, dict[str, float]] = {}
     for field, label in _LATENCY_FIELDS:
@@ -121,6 +130,7 @@ def summarize(events: Iterable[dict], path: Path) -> SessionSummary:
         cache_creation=total("cache_creation_input_tokens"),
         prompt_total=total("prompt_tokens"),
         completion_total=total("completion_tokens"),
+        config=config,
     )
 
 
@@ -128,6 +138,16 @@ def format_report(summary: SessionSummary) -> str:
     """Human-readable single-session report."""
     lines: list[str] = [summary.path.name]
     lines.append(f"  turns: {summary.turns}   llm calls: {summary.llm_calls}")
+    cfg = summary.config
+    if cfg:
+        flags = [
+            f"model={cfg.get('llm_model', '?')}",
+            f"voice={cfg.get('tts_voice', '?')}",
+            f"stream_clauses={cfg.get('stream_clauses')}",
+            f"smart_turn={cfg.get('smart_turn_enabled')}",
+            f"user_speech_timeout={cfg.get('user_speech_timeout')}",
+        ]
+        lines.append(f"  config: {'  '.join(flags)}")
     lines.append("")
 
     if summary.latency:

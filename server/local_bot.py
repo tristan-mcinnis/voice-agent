@@ -39,6 +39,7 @@ logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO"))
 async def main():
     cfg = init_config()
     session_log = SessionLog.for_now()
+    session_log.record_config(cfg)
     logger.info(f"Session log: {session_log.path}")
 
     transport = LocalAudioTransport(
