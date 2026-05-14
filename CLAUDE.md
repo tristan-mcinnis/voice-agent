@@ -211,10 +211,20 @@ Key facts:
   vision capture tools accept an optional `question:` arg. See ADR-0002.
 - **Session summarizer.** `scripts/summarize_session.py` is a CLI that
   reduces a session JSONL into one report: turn count, p50/p95/max for each
-  latency phase, total prompt/completion tokens, and cache-hit rate. Use it
-  to A/B `turn.smart_turn_enabled` or `tts.stream_clauses` — flip one flag,
-  run a session, diff the two reports. Invoke:
+  latency phase, total prompt/completion tokens, cache-hit rate, *and* the
+  active config (model, voice, stream_clauses, smart_turn, user-speech
+  timeout) — so a diff across two reports tells you what changed
+  *between runs* and what the latency difference was. Use it to A/B
+  `turn.smart_turn_enabled` or `tts.stream_clauses` — flip one flag, run
+  a session, diff the reports. Invoke:
   `python -m scripts.summarize_session logs/session-*.jsonl`.
+- **Session-config snapshot.** `SessionLog.record_config(config)` writes one
+  `session-config` event at startup capturing every dial that matters for
+  latency/cache/turn-taking comparisons (providers, model, voice,
+  stream_clauses, smart_turn_enabled, user_speech_timeout,
+  echo_holdoff_seconds, connection_timeout_seconds, wake_word_enabled).
+  `local_bot.main` calls it right after `SessionLog.for_now()`. The
+  summarizer reads this and pins it at the top of each report.
 - **LLM cache-hit logging.** The post-LLM `SessionLogProcessor`
   (constructed with `track_usage=True` in `turn_policy`) listens for
   `MetricsFrame`s carrying `LLMUsageMetricsData` and emits one
