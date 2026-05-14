@@ -216,7 +216,7 @@ def main() -> int:
         props = ",".join(schema.properties.keys()) if schema.properties else "-"
         print(f"  - {schema.name}  required=[{req}]  props=[{props}]")
 
-    print("\nCapability summary (injected into {tool_capabilities}):")
+    print("\nCapability summary (rendered into the # Available Tools layer):")
     print(registry.capabilities_summary())
 
     # Exercise BaseTool.execute via the registry (proves the class layer works,

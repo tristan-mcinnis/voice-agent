@@ -49,6 +49,33 @@ USER_CHAR_LIMIT = 1375
 MEMORY_CHAR_LIMIT = 2200
 
 
+# ---------------------------------------------------------------------------
+# Shared accessor — single MemoryLayer instance for the whole process.
+#
+# Without this, ``tools.memory`` constructed one ``MemoryLayer()`` at import
+# time while ``PromptBuilder`` constructed another against
+# ``agent_home / "memories"``. If ``VOICE_AGENT_HOME`` was set after the
+# import-time instance was built (or to a different value), the two pointed
+# at divergent files and writes from the tool never appeared in the prompt.
+# ---------------------------------------------------------------------------
+
+_shared_layer: "MemoryLayer | None" = None
+
+
+def get_memory_layer() -> "MemoryLayer":
+    """Return the process-wide ``MemoryLayer``, constructed lazily."""
+    global _shared_layer
+    if _shared_layer is None:
+        _shared_layer = MemoryLayer()
+    return _shared_layer
+
+
+def reset_memory_layer() -> None:
+    """Clear the shared layer. Tests that re-point ``VOICE_AGENT_HOME`` call this."""
+    global _shared_layer
+    _shared_layer = None
+
+
 def _limit_for(target: str) -> int:
     return USER_CHAR_LIMIT if target == "user" else MEMORY_CHAR_LIMIT
 

@@ -1,11 +1,18 @@
 """Vision capture tools — screenshot, webcam, window, region, display.
 
-Each tool is a thin strategy that captures an image, then delegates to the
-shared ``_capture_and_describe`` adapter. That adapter handles the vision
-chain, result formatting, and error messaging — once, not five times.
+Two layers:
+
+  - ``ScreenCapture`` — the single seam for getting an image off the screen
+    or webcam. Five methods (``screenshot``, ``window``, ``region``,
+    ``display``, ``webcam``), each returning a saved image path. Every tool
+    that needs pixels goes through this — including ``grounding_vision`` —
+    so there is exactly one screencapture invocation in the codebase.
+
+  - Tool classes — thin ``BaseTool`` subclasses that pick a capture method
+    and route the result through ``_capture_and_describe``.
 
 All implementations live in ``BaseTool.execute()`` methods — the canonical
-interface. Thin backward-compat callables are re-exported from ``__init__.py``.
+interface.
 """
 
 from __future__ import annotations
@@ -16,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from tools._macos import is_macos, macos_only
+from tools._macos import is_macos, macos_only, osascript
 from tools.registry import REGISTRY, BaseTool
 from tools.vision import describe_image, no_vision_message
 
@@ -40,33 +47,116 @@ def capture_path(kind: str, ext: str = "jpg") -> str:
 
 
 # ---------------------------------------------------------------------------
-# VisionCapture adapter — the deepened module
+# ScreenCapture — single seam for all pixel acquisition
+# ---------------------------------------------------------------------------
+
+class ScreenCapture:
+    """Acquire pixels from the screen or webcam. One path per modality."""
+
+    def screenshot(self, kind: str = "screenshot") -> str:
+        """Full-screen capture. Uses macOS screencapture when available,
+        falls back to PIL.ImageGrab so non-macOS hosts still work for
+        screenshots."""
+        path = capture_path(kind)
+        if is_macos():
+            subprocess.run(
+                ["screencapture", "-x", "-t", "jpg", path],
+                check=True, capture_output=True, timeout=8.0,
+            )
+            return path
+        from PIL import ImageGrab
+        img = ImageGrab.grab()
+        img.convert("RGB").save(path, "JPEG", quality=85)
+        return path
+
+    def window(self, kind: str = "window") -> str:
+        """Frontmost-window capture (macOS only)."""
+        if not is_macos():
+            raise RuntimeError(macos_only("Window capture"))
+        script = '''
+        tell application "System Events"
+            set frontApp to first process whose frontmost is true
+            set frontWindow to front window of frontApp
+            set {x, y} to position of frontWindow
+            set {w, h} to size of frontWindow
+            return (x as string) & " " & (y as string) & " " & (w as string) & " " & (h as string)
+        end tell
+        '''
+        bounds = osascript(script, timeout=5.0).split()
+        x, y, w, h = bounds
+        path = capture_path(kind)
+        subprocess.run(
+            ["screencapture", "-x", "-t", "jpg", "-R", f"{x},{y},{w},{h}", path],
+            check=True, capture_output=True, timeout=10.0,
+        )
+        return path
+
+    def region(self, x: int, y: int, width: int, height: int, kind: str = "region") -> str:
+        """Rectangular region capture (macOS only)."""
+        if not is_macos():
+            raise RuntimeError(macos_only("Region capture"))
+        path = capture_path(kind)
+        subprocess.run(
+            ["screencapture", "-x", "-t", "jpg", "-R",
+             f"{x},{y},{width},{height}", path],
+            check=True, capture_output=True, timeout=10.0,
+        )
+        return path
+
+    def display(self, n: int = 1, kind: str | None = None) -> str:
+        """Specific display/monitor capture by index (macOS only, 1 = primary)."""
+        if not is_macos():
+            raise RuntimeError(macos_only("Display capture"))
+        label = kind or f"display{n}"
+        path = capture_path(label)
+        subprocess.run(
+            ["screencapture", "-x", "-t", "jpg", f"-D{n}", path],
+            check=True, capture_output=True, timeout=10.0,
+        )
+        return path
+
+    def webcam(self, kind: str = "webcam") -> str:
+        """One frame from the default camera."""
+        import cv2
+        path = capture_path(kind)
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            cap.release()
+            raise RuntimeError("Could not open default camera.")
+        try:
+            for _ in range(3):
+                cap.read()
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                raise RuntimeError("No frame received from webcam.")
+            cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        finally:
+            cap.release()
+        return path
+
+
+# Module-level instance — the seam. Tests can substitute a fake at
+# ``tools.capture.SCREEN_CAPTURE`` before calling the tools.
+SCREEN_CAPTURE = ScreenCapture()
+
+
+# ---------------------------------------------------------------------------
+# VisionCapture adapter — capture + describe in one shot
 # ---------------------------------------------------------------------------
 
 def _capture_and_describe(
     kind: str,
-    capture_fn: Callable[[str], None],
+    capture_fn: Callable[[], str],
     prompt: str,
 ) -> dict:
-    """Capture an image and describe it through the vision chain.
+    """Run ``capture_fn`` to get an image path, then describe it.
 
-    This is the single seam shared by all 5 capture tools. Each tool provides
-    a ``capture_fn(path)`` that writes an image to the given path, and this
-    function handles everything else: path generation, vision chain dispatch,
-    result formatting, error messaging.
-
-    Args:
-        kind: Label for the capture (used in log path and result text).
-        capture_fn: Callable that writes the image to the given path.
-        prompt: The vision prompt to describe the image with.
-
-    Returns:
-        A dict with ``result`` (spoken text) and ``image_path`` (the saved
-        image). The caller passes this straight to ``params.result_callback``.
+    ``capture_fn()`` is a zero-arg callable returning the saved path. All
+    callers route through ``SCREEN_CAPTURE`` so there is exactly one screen-
+    capture implementation in the codebase.
     """
-    path = capture_path(kind)
     try:
-        capture_fn(path)
+        path = capture_fn()
     except Exception as exc:
         return {"result": f"{kind} capture failed: {exc}"}
 
@@ -98,13 +188,7 @@ class TakeScreenshotTool(BaseTool):
 
     def execute(self, question: str = "") -> dict:
         prompt = question.strip() or "Briefly describe what's on this screen."
-
-        def do_capture(path: str) -> None:
-            from PIL import ImageGrab
-            img = ImageGrab.grab()
-            img.convert("RGB").save(path, "JPEG", quality=85)
-
-        return _capture_and_describe("screenshot", do_capture, prompt)
+        return _capture_and_describe("screenshot", SCREEN_CAPTURE.screenshot, prompt)
 
 
 @REGISTRY.register
@@ -126,24 +210,7 @@ class CaptureWebcamTool(BaseTool):
 
     def execute(self, question: str = "") -> dict:
         prompt = question.strip() or "Briefly describe what you see in this webcam image."
-
-        def do_capture(path: str) -> None:
-            import cv2
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                cap.release()
-                raise RuntimeError("Could not open default camera.")
-            try:
-                for _ in range(3):
-                    cap.read()
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    raise RuntimeError("No frame received from webcam.")
-                cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            finally:
-                cap.release()
-
-        return _capture_and_describe("webcam", do_capture, prompt)
+        return _capture_and_describe("webcam", SCREEN_CAPTURE.webcam, prompt)
 
 
 @REGISTRY.register
@@ -162,31 +229,8 @@ class CaptureFrontmostWindowTool(BaseTool):
     def execute(self, question: str = "") -> dict:
         if not is_macos():
             return {"result": macos_only("Window capture")}
-
         prompt = question.strip() or "Briefly describe what's in this window."
-
-        def do_capture(path: str) -> None:
-            script = '''
-            tell application "System Events"
-                set frontApp to first process whose frontmost is true
-                set frontWindow to front window of frontApp
-                set {x, y} to position of frontWindow
-                set {w, h} to size of frontWindow
-                return (x as string) & " " & (y as string) & " " & (w as string) & " " & (h as string)
-            end tell
-            '''
-            result = subprocess.run(
-                ["osascript", "-e", script],
-                capture_output=True, text=True, timeout=5.0, check=True,
-            )
-            bounds = result.stdout.strip().split()
-            x, y, w, h = bounds
-            subprocess.run(
-                ["screencapture", "-x", "-t", "jpg", "-R", f"{x},{y},{w},{h}", path],
-                check=True, capture_output=True, timeout=10.0,
-            )
-
-        return _capture_and_describe("window", do_capture, prompt)
+        return _capture_and_describe("window", SCREEN_CAPTURE.window, prompt)
 
 
 @REGISTRY.register
@@ -212,19 +256,12 @@ class CaptureScreenRegionTool(BaseTool):
     ) -> dict:
         if not is_macos():
             return {"result": macos_only("Region capture")}
-
         prompt = question.strip() or "Briefly describe what's in this screen region."
-
-        def do_capture(path: str) -> None:
-            subprocess.run(
-                [
-                    "screencapture", "-x", "-t", "jpg", "-R",
-                    f"{x},{y},{width},{height}", path,
-                ],
-                check=True, capture_output=True, timeout=10.0,
-            )
-
-        return _capture_and_describe("region", do_capture, prompt)
+        return _capture_and_describe(
+            "region",
+            lambda: SCREEN_CAPTURE.region(x, y, width, height),
+            prompt,
+        )
 
 
 @REGISTRY.register
@@ -244,13 +281,9 @@ class CaptureDisplayTool(BaseTool):
     def execute(self, display: int = 1, question: str = "") -> dict:
         if not is_macos():
             return {"result": macos_only("Display capture")}
-
         prompt = question.strip() or f"Briefly describe what's on display {display}."
-
-        def do_capture(path: str) -> None:
-            subprocess.run(
-                ["screencapture", "-x", "-t", "jpg", f"-D{display}", path],
-                check=True, capture_output=True, timeout=10.0,
-            )
-
-        return _capture_and_describe(f"display{display}", do_capture, prompt)
+        return _capture_and_describe(
+            f"display{display}",
+            lambda: SCREEN_CAPTURE.display(display),
+            prompt,
+        )

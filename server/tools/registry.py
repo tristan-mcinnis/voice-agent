@@ -97,8 +97,9 @@ class ToolRegistry:
     def capabilities_summary(self) -> str:
         """One-line-per-category tool inventory for the system prompt.
 
-        Used to fill the `{tool_capabilities}` placeholder so the LLM knows
-        what's available without the prompt hard-coding tool names.
+        Rendered by ``PromptBuilder`` into the ``# Available Tools`` layer
+        so the LLM knows what's available without the prompt hard-coding
+        tool names.
         """
         lines: list[str] = []
         for cat, tools in self.by_category().items():
@@ -131,21 +132,30 @@ def _make_handler(tool: BaseTool, session_log=None) -> Callable:
 
     Result-shaping rule: dict results pass through unchanged (the LLM sees
     them as structured data); any other result is wrapped in `{"result": value}`.
+
+    Argument filtering: the LLM occasionally hallucinates parameter names. We
+    drop unknown keys against the tool's declared `parameters` schema instead
+    of catching `TypeError`, which used to silently mask real bugs in
+    `execute()` by retrying with zero args.
     """
+    known_params = set(tool.parameters.keys())
 
     async def handler(params):
-        args = params.arguments or {}
+        raw_args = params.arguments or {}
+        args = {k: v for k, v in raw_args.items() if k in known_params}
+        dropped = set(raw_args) - known_params
+        if dropped:
+            logger.warning(
+                f"tool {tool.name}: dropping unknown arg(s) {sorted(dropped)} "
+                f"(declared: {sorted(known_params)})"
+            )
         if session_log is not None:
             session_log.event("tool-called", name=tool.name, args=args)
 
         if tool.speak_text:
             await params.llm.push_frame(TTSSpeakFrame(tool.speak_text))
         try:
-            try:
-                result = await asyncio.to_thread(tool.execute, **args)
-            except TypeError:
-                # Tolerate the LLM passing extra/wrong-named args — call with none.
-                result = await asyncio.to_thread(tool.execute)
+            result = await asyncio.to_thread(tool.execute, **args)
         except Exception as exc:
             err = f"{type(exc).__name__}: {exc}"
             if session_log is not None:

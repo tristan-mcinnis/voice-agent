@@ -70,6 +70,13 @@ Speex software echo cancellation that subtracts the bot's TTS output from the
 mic input. Enables voice barge-in by keeping the mic open during bot turns.
 Experimental — archived in `experiments/aec/`.
 
+**TurnPolicy**
+The cohesive bundle of mute strategies, turn-start/stop strategies, echo
+suppressor, wake-word gate, VAD processor placement, and connection
+rendezvous that together define how a turn starts and ends on a given
+transport. Local-audio has its own (no-AEC) policy in `turn_policy.py`;
+hardware-AEC transports would have a sibling policy.
+
 **Provider**
 An external API backend (Soniox, DeepSeek, Kimi/Moonshot, OpenAI). Each
 provider is configured in `config.yaml` with a name, base URL, model, and

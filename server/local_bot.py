@@ -1,37 +1,13 @@
 """Local voice bot — mic → Soniox STT → DeepSeek LLM → Soniox TTS → speakers.
 
-Reuses the shared STT/TTS/LLM stack from `voice_bot.py`.
+Reuses the shared STT/TTS/LLM stack from ``voice_bot.py``. The no-AEC turn
+lifecycle — mute strategies, VAD-only turn-start, echo suppressor, wake-word
+gate, connection rendezvous, diagnostics — is owned by ``turn_policy``.
+This module just builds the transport, asks the policy for its pieces, and
+assembles the pipeline.
 
-Per-session structured logs are written to `logs/session-<ts>.jsonl` as the
-session runs (see `session_log.py`).
-
-## Local-audio pipeline concerns
-
-When the transport is `LocalAudioTransport` (mic + speakers), there is no
-browser/Daily AEC to suppress speaker bleed-back into the mic. That forces
-three concerns that don't exist in a Daily/WebRTC transport:
-
-1. **Mute strategies.** Mute the mic during every bot turn so the bot doesn't
-   self-interrupt by hearing its own output. Plus mute from startup until the
-   first bot turn completes — otherwise ambient mic noise gets transcribed in
-   the ~1s gap between the trigger firing and the first TTS chunk landing,
-   which broadcasts an "interruption" and kills the LLM call before the bot
-   ever speaks.
-
-2. **Turn-start strategy.** Use VAD only. The default also includes
-   `TranscriptionUserTurnStartStrategy`, which opens a phantom turn the
-   instant Soniox emits a transcript — including transcripts of speaker-echo
-   of the bot's own intro. That phantom turn never cleanly closes, so the
-   user's real reply is silently swallowed.
-
-3. **Connection rendezvous.** Both STT and TTS must be connected before
-   pushing the seed context frame, otherwise the bot's intro is lost.
-
-Note: in Pipecat 1.1.0 the `vad_analyzer` parameter on `LocalAudioTransportParams`
-is silently ignored (not a Pydantic field, dropped on construction). To get
-`VADUserStartedSpeakingFrame` events — which `VADUserTurnStartStrategy` listens
-for — the VAD analyzer must live in a `VADProcessor` placed in the pipeline.
-Without this, the bot speaks its intro and then never picks up the user's reply.
+Per-session structured logs are written to ``logs/session-<ts>.jsonl`` as
+the session runs (see ``session_log.py``).
 """
 
 import asyncio
@@ -40,36 +16,15 @@ import sys
 
 from dotenv import load_dotenv
 from loguru import logger
-from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.llm_response_universal import (
-    LLMContextAggregatorPair,
-    LLMUserAggregatorParams,
-)
-from pipecat.processors.audio.vad_processor import VADProcessor
-from pipecat.services.soniox.stt import SonioxSTTService
-from pipecat.services.soniox.tts import SonioxTTSService
 from pipecat.transports.local.audio import LocalAudioTransport, LocalAudioTransportParams
-from pipecat.turns.user_mute.always_user_mute_strategy import (
-    AlwaysUserMuteStrategy,
-)
-from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy import (
-    MuteUntilFirstBotCompleteUserMuteStrategy,
-)
-from pipecat.turns.user_start.vad_user_turn_start_strategy import (
-    VADUserTurnStartStrategy,
-)
-from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import (
-    SpeechTimeoutUserTurnStopStrategy,
-)
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
-from config import init_config, get_config
-from connection_rendezvous import ConnectionRendezvous
-from processors import EchoSuppressor, SessionLog, SessionLogProcessor, WakeWordGate
+from config import init_config
+from processors import SessionLog
 from hotkey_interrupt import install_interrupt_hotkey
+from turn_policy import LocalAudioTurnPolicy
 from voice_bot import build_components, set_agent_home
 
 # Set the agent home before any agent.* imports resolve VOICE_AGENT_HOME.
@@ -80,91 +35,6 @@ load_dotenv(override=True)
 logger.remove()
 logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO"))
 
-
-# ---------------------------------------------------------------------------
-# Local-audio mute + turn strategies
-# ---------------------------------------------------------------------------
-
-def _local_user_aggregator_params(
-    *, user_speech_timeout: float
-) -> LLMUserAggregatorParams:
-    """Mute + turn strategies for mic-and-speakers transports.
-
-    Speech-timeout stop is simpler than the smart-turn ONNX model and fires
-    reliably on short replies.
-    """
-    return LLMUserAggregatorParams(
-        user_mute_strategies=[
-            MuteUntilFirstBotCompleteUserMuteStrategy(),
-            AlwaysUserMuteStrategy(),
-        ],
-        user_turn_strategies=UserTurnStrategies(
-            start=[VADUserTurnStartStrategy()],
-            stop=[
-                SpeechTimeoutUserTurnStopStrategy(
-                    user_speech_timeout=user_speech_timeout
-                )
-            ],
-        ),
-    )
-
-
-def _install_diagnostics(
-    context_aggregator: LLMContextAggregatorPair,
-) -> None:
-    """Attach pure-logging event handlers for pipeline observability.
-
-    Every link in the mic → STT → user-turn → LLM → TTS chain is logged
-    so a failed run is immediately attributable to a specific stage.
-
-    Data-driven — add a line to ``_DIAG_EVENTS`` to register a new event;
-    no new closures needed.
-    """
-    _DIAG_EVENTS = [
-        ("on_user_mute_started",  "🔇 USER MUTED (bot is speaking)"),
-        ("on_user_mute_stopped",  "🎤 USER UNMUTED (mic is open)"),
-        ("on_user_turn_started",  "🗣️  USER TURN STARTED — bot detected you started speaking"),
-        ("on_user_turn_stopped",  "✅ USER TURN STOPPED — sending to LLM now"),
-        ("on_user_turn_idle",     "💤 user idle (no speech for a while)"),
-    ]
-    user = context_aggregator.user()
-    for event, msg in _DIAG_EVENTS:
-        async def _handler(*_args, _msg: str = msg) -> None:
-            logger.info(_msg)
-        user.event_handler(event)(_handler)
-
-
-def _install_local_audio_lifecycle(
-    *,
-    stt: SonioxSTTService,
-    tts: SonioxTTSService,
-    context_aggregator: LLMContextAggregatorPair,
-) -> None:
-    """Wire the dual-connection rendezvous for STT+TTS startup.
-
-    Uses ``ConnectionRendezvous`` to push the seed context frame exactly once
-    when both STT and TTS are connected — that triggers the bot's introduction.
-    """
-    rendezvous = ConnectionRendezvous(
-        callback=context_aggregator.user().push_context_frame
-    )
-
-    @stt.event_handler("on_connected")
-    async def _on_stt_connected(stt):
-        logger.info("Soniox STT connected")
-        await rendezvous.stt_ready()
-
-    @tts.event_handler("on_connected")
-    async def _on_tts_connected(tts):
-        logger.info("Soniox TTS connected")
-        await rendezvous.tts_ready()
-
-    _install_diagnostics(context_aggregator)
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 async def main():
     cfg = init_config()
@@ -178,34 +48,23 @@ async def main():
         )
     )
 
+    policy = LocalAudioTurnPolicy(config=cfg, session_log=session_log)
+
     components = build_components(
         initial_user_message="Hello!",
-        user_aggregator_params=_local_user_aggregator_params(
-            user_speech_timeout=cfg.turn.user_speech_timeout,
-        ),
+        user_aggregator_params=policy.aggregator_params,
         session_log=session_log,
-    )
-
-    vad = VADProcessor(vad_analyzer=SileroVADAnalyzer())
-
-    log_proc_pre = SessionLogProcessor(session_log)
-    log_proc_post = SessionLogProcessor(session_log)
-    wake_gate = WakeWordGate(components.config.wake_word)
-    echo_suppressor = EchoSuppressor(
-        holdoff_seconds=cfg.turn.echo_holdoff_seconds
     )
 
     pipeline = Pipeline(
         [
             transport.input(),
-            vad,
+            *policy.processors_pre_aggregator(),
             components.stt,
-            echo_suppressor,
-            wake_gate,
-            log_proc_pre,
+            *policy.processors_after_stt(),
             components.context_aggregator.user(),
             components.llm,
-            log_proc_post,
+            *policy.processors_post_llm(),
             components.tts,
             transport.output(),
             components.context_aggregator.assistant(),
@@ -214,7 +73,7 @@ async def main():
 
     task = PipelineTask(pipeline, params=PipelineParams(enable_metrics=True))
 
-    _install_local_audio_lifecycle(
+    policy.install_lifecycle(
         stt=components.stt,
         tts=components.tts,
         context_aggregator=components.context_aggregator,

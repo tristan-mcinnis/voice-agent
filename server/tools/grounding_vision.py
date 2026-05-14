@@ -19,12 +19,11 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 from typing import Optional
 
 from tools._macos import is_macos, macos_only
 from tools.registry import REGISTRY, BaseTool
-from tools.capture import capture_path  # type: ignore
+from tools.capture import SCREEN_CAPTURE
 from tools import vision
 
 
@@ -116,12 +115,8 @@ class FindOnScreenTool(BaseTool):
         if not instruction or not instruction.strip():
             return {"result": "find_on_screen needs a non-empty instruction."}
 
-        path = capture_path("find", "jpg")
         try:
-            subprocess.run(
-                ["screencapture", "-x", "-t", "jpg", path],
-                check=True, capture_output=True, timeout=8.0,
-            )
+            path = SCREEN_CAPTURE.screenshot(kind="find")
         except Exception as exc:
             return {"result": f"Screenshot failed: {type(exc).__name__}: {exc}"}
 

@@ -16,10 +16,12 @@ from __future__ import annotations
 from typing import Optional
 
 from tools.registry import BaseTool, REGISTRY
-from tools.memory_layer import MemoryLayer, USER_CHAR_LIMIT, MEMORY_CHAR_LIMIT  # noqa: F401  # re-exported
-
-# Module-level instance — shared by the tool class and PromptBuilder.
-_layer = MemoryLayer()
+from tools.memory_layer import (  # noqa: F401  # re-exported
+    MemoryLayer,
+    USER_CHAR_LIMIT,
+    MEMORY_CHAR_LIMIT,
+    get_memory_layer,
+)
 
 
 class MemoryTool(BaseTool):
@@ -96,12 +98,13 @@ Record facts that should survive across sessions:
         content: str = "",
         old_text: str = "",
     ) -> dict:
+        layer = get_memory_layer()
         if action == "list":
-            return _layer.list_entries(target)
+            return layer.list_entries(target)
         if action == "add":
-            return _layer.add(target, content)
+            return layer.add(target, content)
         if action == "replace":
-            return _layer.replace(target, content, old_text)
+            return layer.replace(target, content, old_text)
         return {"result": f"Unknown action {action!r}. Use 'add', 'replace', or 'list'."}
 
 

@@ -81,7 +81,7 @@ Edit `config.yaml` (copied from `config.example.yaml`) to swap providers, models
 - **`stt`** / **`tts`** — Soniox only today; add a builder in `voice_bot._build_stt/tts` for others
 - **`vision`** — fallback chain; first provider that returns text wins. Default: MLX local (`Qwen3-VL-2B-Instruct-4bit`) → Kimi `kimi-k2.6`. Set to `[]` to disable vision. See [ADR-0002](docs/adr/0002-vision-fallback-chain.md).
 - **`wake_word`** — phrase, sleep phrase, idle timeout, ack text
-- **`system_prompt`** — LLM system message; use `{tool_capabilities}` to auto-inject a tool inventory
+- **`system_prompt`** — LLM system message. The `PromptBuilder` renders the tool inventory in its own layer, so identity text shouldn't list tools manually.
 
 Secrets stay in `.env`; `config.yaml` references them by name (`api_key_env: DEEPSEEK_API_KEY`).
 
@@ -128,7 +128,7 @@ class MyTool(BaseTool):
         return f"did a thing with {arg}"
 ```
 
-The tool is automatically wired to the LLM and appears in the capability summary (the `{tool_capabilities}` placeholder in the system prompt). To make the tool callable as `tools.my_tool(...)` for backward compat, add a `my_tool = _compat("my_tool")` line in `tools/__init__.py`.
+The tool is automatically wired to the LLM and appears in the capability summary that `PromptBuilder` renders into the `# Available Tools` layer of the system prompt. `tools.my_tool(...)` resolves to `REGISTRY.get("my_tool").execute` automatically via `tools/__init__.py`'s module-level `__getattr__`.
 
 ## Cognitive-stack memory files
 

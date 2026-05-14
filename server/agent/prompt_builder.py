@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from tools.memory_layer import MemoryLayer
+from tools.memory_layer import MemoryLayer, get_memory_layer
 from agent.paths import agent_home as _agent_home, skills_dir as _skills_dir
 
 # Fallback identity when SOUL.md is missing or empty.
@@ -44,9 +44,10 @@ class PromptBuilder:
         agent_home: Optional[Path] = None,
     ) -> None:
         self.agent_home = (agent_home or _agent_home()).expanduser().resolve()
-        self.memory_store = memory_store or MemoryLayer(
-            base_path=self.agent_home / "memories"
-        )
+        # Default to the process-wide shared MemoryLayer so the tool's writes
+        # and the prompt's reads always hit the same files. Tests inject a
+        # custom layer when they need to point at a temp directory.
+        self.memory_store = memory_store or get_memory_layer()
         self.registry = registry
         self.default_identity = default_identity or DEFAULT_AGENT_IDENTITY
 
@@ -54,23 +55,16 @@ class PromptBuilder:
     # Layer loaders
     # ------------------------------------------------------------------
 
-    def load_soul_md(self, tool_descriptions: str = "") -> tuple[str, bool]:
+    def load_soul_md(self) -> str:
         """Load the agent's identity from ``<agent_home>/SOUL.md``.
 
         Falls back to ``default_identity`` (usually the config's
         ``system_prompt``) when the file is missing or contains only
         template comments.
-
-        Returns ``(soul_text, consumed_tools)``. ``consumed_tools`` is
-        True when the legacy ``{tool_capabilities}`` placeholder was
-        found and substituted — the caller should suppress the separate
-        tool inventory section to avoid duplication.
         """
         soul_path = self.agent_home / "SOUL.md"
         if soul_path.exists():
             content = soul_path.read_text(encoding="utf-8").strip()
-            # Heuristic: ignore files that are only HTML comments, markdown
-            # headings, or whitespace. A file with just a title is still empty.
             substantive: list[str] = []
             in_comment = False
             for ln in content.splitlines():
@@ -87,18 +81,8 @@ class PromptBuilder:
                     continue
                 substantive.append(ln)
             if substantive:
-                return self._maybe_substitute_tools(content, tool_descriptions)
-        return self._maybe_substitute_tools(self.default_identity, tool_descriptions)
-
-    @staticmethod
-    def _maybe_substitute_tools(text: str, tool_descriptions: str) -> tuple[str, bool]:
-        """If ``{tool_capabilities}`` is in *text*, substitute it.
-
-        Returns ``(result, did_substitute)``.
-        """
-        if "{tool_capabilities}" in text and tool_descriptions:
-            return text.replace("{tool_capabilities}", tool_descriptions), True
-        return text, False
+                return content
+        return self.default_identity
 
     def build_context_files_prompt(self, cwd: Path) -> str:
         """Scan *cwd* for project-specific rule files.
@@ -111,20 +95,6 @@ class PromptBuilder:
             if target.exists():
                 return f"\n# Project Rules ({filename})\n{target.read_text(encoding='utf-8')}"
         return ""
-
-    def _collect_tool_guidance(self) -> str:
-        """Collect usage guidance from every registered tool that has it.
-
-        Tool authors set ``guidance`` on their ``BaseTool`` subclass.
-        PromptBuilder joins them — it never hard-codes tool-specific prose.
-        """
-        if self.registry is None:
-            return ""
-        blocks: list[str] = []
-        for tool in self.registry.all():
-            if tool.guidance:
-                blocks.append(tool.guidance.strip())
-        return "\n\n".join(blocks)
 
     def get_tool_descriptions(self) -> str:
         """Return the category-grouped tool inventory from the registry."""
@@ -170,12 +140,7 @@ class PromptBuilder:
         tools: str,
         skills: str,
     ) -> str:
-        """Concatenate layers into the final frozen system prompt.
-
-        Pure concatenation — no conditional logic, no backward-compat hacks.
-        Any ``{tool_capabilities}`` substitution happened upstream in
-        ``load_soul_md()``.
-        """
+        """Concatenate layers into the final frozen system prompt."""
         parts: list[str] = []
 
         # Soul / Identity
@@ -188,11 +153,12 @@ class PromptBuilder:
         if user:
             parts.append(user)
 
-        # Tool usage guidance — collected from the registry, not hard-coded.
-        # Each tool can set `guidance` on its class; PromptBuilder collects them.
-        tool_guidance = self._collect_tool_guidance()
-        if tool_guidance:
-            parts.append(tool_guidance)
+        # NOTE: tool-specific ``guidance`` strings are intentionally NOT
+        # auto-injected here. Doing so bloats the cache-warm prefix in
+        # proportion to tool count regardless of relevance. The tool's own
+        # ``description`` is enough for the LLM's function-selection step;
+        # workflow protocols belong in the description if they're load-bearing.
+        # See ADR-0006.
 
         # Project-specific rules
         if context:
@@ -221,24 +187,18 @@ class PromptBuilder:
             cwd: Directory to scan for project context files. Defaults to
                 the current working directory.
         """
-        tool_docs = self.get_tool_descriptions()
-        soul, consumed_tools = self.load_soul_md(tool_descriptions=tool_docs)
+        soul = self.load_soul_md()
         user_profile = self.memory_store.load_user_prompt()
         project_memory = self.memory_store.load_memory_prompt()
         project_context = self.build_context_files_prompt(cwd or Path.cwd())
         skills_index = self.get_relevant_skills_index(user_input)
-
-        # If the soul layer already absorbed the tool inventory (legacy
-        # {tool_capabilities} placeholder was present), suppress the
-        # separate tool section to avoid duplication.
-        tools = "" if consumed_tools else tool_docs
 
         return self.assemble_system_prompt(
             soul=soul,
             user=user_profile,
             memory=project_memory,
             context=project_context,
-            tools=tools,
+            tools=self.get_tool_descriptions(),
             skills=skills_index,
         )
 
