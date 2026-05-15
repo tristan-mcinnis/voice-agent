@@ -193,6 +193,16 @@ Key facts:
 - **`search_history` tool.** Searches raw session JSONL logs for past
   conversations. Use when the user asks "what did we talk about last time?"
   — the curated memory files hold facts; this tool finds transcripts.
+- **`memory_tree` tool.** Long-form leaf store at
+  `.voice-agent/memories/tree/` for recollections too big for USER.md /
+  MEMORY.md but worth keeping (meeting summaries, debugging post-mortems,
+  multi-paragraph context). Actions: `write` (new leaf, capped at 4000
+  chars), `search` (token-overlap ranking with snippets), `read` (full
+  leaf by id), `list` (newest first), `delete`. Flat by design —
+  always-loaded curated index in MEMORY.md/USER.md stays frozen for
+  prefix caching; the tree only loads on demand when the agent calls
+  `memory_tree`. Search is O(N · L) substring scans, sub-millisecond
+  until thousands of leaves. See `agent/memory_tree.py`.
 - **TokenJuice compression.** `tools/compression.py` runs every tool result
   through a pure reduction (HTML→text, script/style/comment drop, entity
   decode, URL shortening over `url_max_chars`, control-char strip,

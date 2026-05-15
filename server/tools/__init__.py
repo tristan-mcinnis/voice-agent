@@ -38,6 +38,7 @@ _TOOL_MODULES: list[tuple[str, str]] = [
     ("tools.grounding_vision", "grounding-vision tools"),
     ("tools.web", "web tools"),
     ("tools.memory", "memory tools"),
+    ("tools.memory_tree", "memory-tree tools"),
     ("tools.search_history", "search-history tools"),
     ("tools.external_agents", "external-agent tools"),
 ]

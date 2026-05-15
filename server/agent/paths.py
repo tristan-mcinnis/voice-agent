@@ -40,3 +40,15 @@ def memories_dir() -> Path:
 def skills_dir() -> Path:
     """Return the skills subdirectory (``.voice-agent/skills/``)."""
     return agent_home() / "skills"
+
+
+def memory_tree_dir() -> Path:
+    """Return the memory-tree leaf store (``.voice-agent/memories/tree/``).
+
+    Holds individual leaf files — longer recollections that don't belong
+    in the always-loaded USER.md / MEMORY.md curated index. The agent
+    drills in on demand via the ``memory_tree`` tool.
+    """
+    d = memories_dir() / "tree"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
