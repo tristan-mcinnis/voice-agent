@@ -57,29 +57,18 @@ def register_all() -> None:
             logger.warning(f"tools: skipping {label} ({module_name}) — import failed: {exc}")
         except Exception as exc:
             logger.warning(f"tools: skipping {label} ({module_name}) — {type(exc).__name__}: {exc}")
+
+    # Dynamic external-agent tools: one ``ask_<key>`` per ``agents.consult.<key>``,
+    # one ``spawn_<key>`` per ``agents.coding.<key>``. YAML is the single source
+    # of truth — adding a new provider is a config edit, not a Python edit.
+    try:
+        from tools.external_agents import register_dynamic_tools
+        register_dynamic_tools()
+    except Exception as exc:
+        logger.warning(f"tools: dynamic external-agent registration failed — {type(exc).__name__}: {exc}")
+
     logger.info(f"tools: {len(REGISTRY.all())} registered")
 
 
-# ---------------------------------------------------------------------------
-# Module-level __getattr__ — auto-resolves tool names from the registry.
-# For backward compat: `tools.read_file(...)` → `REGISTRY.get("read_file").execute(...)`
-# ---------------------------------------------------------------------------
-
-# Attribute name → registry tool name. Only needed for aliases.
-_COMPAT_ALIASES: dict[str, str] = {
-    "patch_file": "patch",
-}
-
-
-def __getattr__(name: str):
-    """Resolve `tools.<name>(...)` → `REGISTRY.get(<name>).execute(...)`."""
-    if name.startswith("_"):
-        raise AttributeError(name)
-    tool_name = _COMPAT_ALIASES.get(name, name)
-    try:
-        return REGISTRY.get(tool_name).execute
-    except KeyError:
-        raise AttributeError(
-            f"module {__name__!r} has no attribute {name!r} "
-            f"(no tool registered as {tool_name!r})"
-        ) from None
+# Callers should use ``REGISTRY.get(name).execute(...)`` directly — there is
+# no module-level attribute fallback. One tool-call API across the codebase.

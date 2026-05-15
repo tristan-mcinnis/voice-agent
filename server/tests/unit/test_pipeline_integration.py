@@ -116,9 +116,30 @@ class TestSessionLogProcessor:
         assert len(user_spoke) == 1
         assert user_spoke[0]["text"] == "hello world"
 
-    def test_llm_usage_event_when_tracking_enabled(self, session_log):
+    def test_session_log_processor_ignores_metrics_frames(self, session_log):
+        """SessionLogProcessor must never emit llm-usage — that lives in
+        LLMUsageLogProcessor now, single-owner across the pipeline."""
+        proc = SessionLogProcessor(session_log)
+        usage = LLMTokenUsage(prompt_tokens=10, completion_tokens=2, total_tokens=12)
+        metrics = MetricsFrame(data=[
+            LLMUsageMetricsData(processor="llm", model="x", value=usage)
+        ])
+
+        async def run():
+            await _setup(proc)
+            await _push(proc, metrics)
+
+        asyncio.run(run())
+
+        events = _read_events(session_log.path)
+        assert not any(e["event"] == "llm-usage" for e in events)
+
+
+class TestLLMUsageLogProcessor:
+    def test_metrics_frame_emits_llm_usage_event(self, session_log):
         """Pin the cache-hit logging path: MetricsFrame → llm-usage event."""
-        proc = SessionLogProcessor(session_log, track_usage=True)
+        from processors import LLMUsageLogProcessor
+        proc = LLMUsageLogProcessor(session_log)
 
         usage = LLMTokenUsage(
             prompt_tokens=1500, completion_tokens=80, total_tokens=1580,
@@ -139,23 +160,6 @@ class TestSessionLogProcessor:
         assert len(usage_events) == 1
         assert usage_events[0]["prompt_tokens"] == 1500
         assert usage_events[0]["cache_read_input_tokens"] == 1300
-
-    def test_llm_usage_silent_when_tracking_disabled(self, session_log):
-        """Default (track_usage=False) instances must not double-log."""
-        proc = SessionLogProcessor(session_log, track_usage=False)
-        usage = LLMTokenUsage(prompt_tokens=10, completion_tokens=2, total_tokens=12)
-        metrics = MetricsFrame(data=[
-            LLMUsageMetricsData(processor="llm", model="x", value=usage)
-        ])
-
-        async def run():
-            await _setup(proc)
-            await _push(proc, metrics)
-
-        asyncio.run(run())
-
-        events = _read_events(session_log.path)
-        assert not any(e["event"] == "llm-usage" for e in events)
 
 
 class TestLatencyTracer:

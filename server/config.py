@@ -145,15 +145,19 @@ class HotkeyConfig:
 class ConsultProviderConfig:
     """One Tier 1 consult target — an OpenAI-compatible chat endpoint.
 
-    Tier 1 = synchronous "ask another model" calls (`ask_kimi`,
-    `ask_deepseek_reasoner`, `ask_gemini`). Each provider here is dispatched
-    via `tools.external_agents._consult`.
+    Tier 1 = synchronous "ask another model" calls. The dynamic tool
+    factory in ``tools.external_agents`` emits one ``ask_<key>`` tool per
+    entry, so adding a new provider (Grok, o1, Claude Sonnet, …) is a
+    YAML-only change. ``description`` and ``speak_text`` are surfaced to
+    the LLM verbatim — if omitted, sensible defaults are generated.
     """
     name: str
     base_url: str
     model: str
     api_key_env: str = ""
     timeout: float = 60.0
+    description: str = ""
+    speak_text: str = ""
     # Provider-specific knobs merged into the chat-completions body.
     # DeepSeek uses this to enable `thinking`, etc.
     extra: dict[str, Any] = field(default_factory=dict)
@@ -166,10 +170,16 @@ class CodingAgentConfig:
     `task_as_arg=True` (default) appends the task string as a positional
     argument: `<bin> <default_args...> <task>`. Set to `False` to pipe the
     task through stdin instead (some CLIs prefer that).
+
+    ``friendly``, ``description``, and ``speak_text`` feed the dynamic
+    ``spawn_<key>`` tool — defaults are derived from the key when omitted.
     """
     bin: str
     default_args: list[str] = field(default_factory=list)
     task_as_arg: bool = True
+    friendly: str = ""
+    description: str = ""
+    speak_text: str = ""
 
 
 @dataclass(frozen=True)

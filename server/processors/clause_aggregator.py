@@ -123,3 +123,19 @@ class ClauseTextAggregator(BaseTextAggregator):
 
     async def reset(self):
         self._buf = ""
+
+
+def install_on_tts(tts, *, min_words: int) -> None:
+    """Replace a Pipecat TTS service's text aggregator with a clause-streaming one.
+
+    Pipecat 1.1's ``TTSService`` instantiates ``_text_aggregator`` privately
+    and exposes no public swap API. This helper localises that single reach
+    so the rest of the codebase stays clear of the private attribute.
+
+    If a future Pipecat release adds a public setter (``tts.set_text_aggregator``,
+    constructor arg, etc.), update this one line — no other caller knows.
+    """
+    tts._text_aggregator = ClauseTextAggregator(
+        aggregation_type=tts._text_aggregator.aggregation_type,
+        min_words=min_words,
+    )

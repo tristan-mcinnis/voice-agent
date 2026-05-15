@@ -174,17 +174,24 @@ agents:
   # When the cap is reached, spawn_* tools refuse with an instructive error.
   max_concurrent: 3
 
+  # Each entry under consult: becomes an `ask_<key>` tool. Add a new model
+  # by adding a new key — no Python edits needed. Optional `description`
+  # and `speak_text` are surfaced to the LLM verbatim; sensible defaults
+  # are generated from the key/model if omitted.
   consult:
     kimi:
+      name: Kimi
       base_url: https://api.moonshot.cn/v1
       model: kimi-k2.6
       api_key_env: MOONSHOT_API_KEY
       timeout: 60.0
     deepseek_reasoner:
+      name: DeepSeek Reasoner
       base_url: https://api.deepseek.com/v1
       model: deepseek-reasoner
       api_key_env: DEEPSEEK_API_KEY
       timeout: 120.0
+      speak_text: Let me think harder on that.
       # DeepSeek's thinking is ON for this consult tool — that's the whole
       # point (voice path uses thinking=disabled for latency).
       extra:
@@ -192,6 +199,7 @@ agents:
           thinking:
             type: enabled
     gemini:
+      name: Gemini
       # Gemini's OpenAI-compatible endpoint. Drop in the API key as
       # GEMINI_API_KEY (works with AI Studio keys).
       base_url: https://generativelanguage.googleapis.com/v1beta/openai

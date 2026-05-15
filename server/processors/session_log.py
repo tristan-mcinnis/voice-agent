@@ -213,18 +213,16 @@ class SessionLogProcessor(FrameProcessor):
     then keep only the "leaves" — chunks that no other chunk extends as a
     longer prefix. That collapses each cumulative snapshot stream down to its
     final form while preserving distinct sentences.
+
+    This processor never touches ``MetricsFrame`` — LLM token-usage logging
+    lives in ``LLMUsageLogProcessor`` so the two concerns don't share state.
     """
 
-    def __init__(self, session_log: SessionLog, *, track_usage: bool = False):
+    def __init__(self, session_log: SessionLog):
         super().__init__()
         self._log = session_log
         self._user_chunks: list[str] = []
         self._bot_chunks: list[str] = []
-        # Only one instance per pipeline should track LLM token usage —
-        # otherwise every MetricsFrame (which propagates to all processors)
-        # gets logged twice. Set ``track_usage=True`` on the post-LLM
-        # instance only.
-        self._track_usage = track_usage
 
     @staticmethod
     def _leaves(chunks: list[str]) -> list[str]:
@@ -265,30 +263,41 @@ class SessionLogProcessor(FrameProcessor):
             self._bot_chunks.clear()
             if text:
                 self._log.event("bot-spoke", text=text)
-        elif self._track_usage and isinstance(frame, MetricsFrame):
-            self._log_usage(frame)
 
         await self.push_frame(frame, direction)
 
-    def _log_usage(self, frame: MetricsFrame) -> None:
-        """Emit an ``llm-usage`` event for each LLM usage entry in the frame.
 
-        DeepSeek (and other OpenAI-compatible providers) report cache stats in
-        ``cache_read_input_tokens``. A non-zero value means the cognitive-stack
-        prefix is being reused — exactly what ``PromptBuilder`` is designed
-        to enable. ``cache_creation_input_tokens`` shows the first-turn cost
-        of seeding the cache.
-        """
-        for entry in frame.data:
-            if not isinstance(entry, LLMUsageMetricsData):
-                continue
-            usage = entry.value
-            self._log.event(
-                "llm-usage",
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
-                total_tokens=usage.total_tokens,
-                cache_read_input_tokens=usage.cache_read_input_tokens,
-                cache_creation_input_tokens=usage.cache_creation_input_tokens,
-                reasoning_tokens=usage.reasoning_tokens,
-            )
+class LLMUsageLogProcessor(FrameProcessor):
+    """FrameProcessor that records LLM token-usage MetricsFrames as ``llm-usage`` events.
+
+    Place exactly one instance post-LLM. ``MetricsFrame``s propagate to every
+    processor in the pipeline, so a second instance would double-count cache
+    hits — keep the seam single-owner.
+
+    Cache stats: DeepSeek (and other OpenAI-compatible providers) report
+    ``cache_read_input_tokens`` and ``cache_creation_input_tokens``. A
+    non-zero ``cache_read_input_tokens`` means the cognitive-stack prefix
+    is being reused — exactly what ``PromptBuilder`` is designed to enable.
+    """
+
+    def __init__(self, session_log: SessionLog):
+        super().__init__()
+        self._log = session_log
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, MetricsFrame):
+            for entry in frame.data:
+                if not isinstance(entry, LLMUsageMetricsData):
+                    continue
+                usage = entry.value
+                self._log.event(
+                    "llm-usage",
+                    prompt_tokens=usage.prompt_tokens,
+                    completion_tokens=usage.completion_tokens,
+                    total_tokens=usage.total_tokens,
+                    cache_read_input_tokens=usage.cache_read_input_tokens,
+                    cache_creation_input_tokens=usage.cache_creation_input_tokens,
+                    reasoning_tokens=usage.reasoning_tokens,
+                )
+        await self.push_frame(frame, direction)

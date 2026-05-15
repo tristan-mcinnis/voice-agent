@@ -1,22 +1,24 @@
 """Memory layer — single source of truth for persistent memory file format and operations.
 
-Unifies what was scattered across ``agent/memory_store.py`` (read side) and
-``tools/memory.py`` (write side) into one module that owns:
+Owns:
 
 - The § delimiter format
 - Character limits (USER_CHAR_LIMIT, MEMORY_CHAR_LIMIT)
 - Read: loading entries into prompt-ready wrapped text
 - Write: add / replace / list with near-duplicate detection and pressure checks
 
+Lives in ``agent/`` because it is the agent's persistent-memory primitive.
+``tools/memory.py`` is the thin tool-registry adapter on top of it.
+
 Usage::
 
-    from tools.memory_layer import MemoryLayer
+    from agent.memory_layer import MemoryLayer
 
     layer = MemoryLayer(base_path=Path(".voice-agent/memories"))
 
     # Read side (what PromptBuilder uses):
-    user_snapshot = layer.load_user_prompt()   # <user_profile>wrapped</user_profile>
-    memory_snapshot = layer.load_memory_prompt()  # <persistent_memory>wrapped</persistent_memory>
+    user_snapshot = layer.load_user_prompt()
+    memory_snapshot = layer.load_memory_prompt()
 
     # Write side (what MemoryTool delegates to):
     result = layer.add("user", "User prefers TypeScript.")
@@ -33,18 +35,22 @@ from typing import Optional
 
 from loguru import logger
 
+from agent.paths import memories_dir as _agent_memories_dir
+
 
 def _default_memories_dir() -> Path:
-    """Return the default memories directory from VOICE_AGENT_HOME env var.
+    """Canonical memories directory via ``agent.paths``.
 
-    Does NOT import from agent.paths — that would create a circular import
-    because agent/__init__.py imports MemoryStore which imports MemoryLayer.
+    Falls back to ``./.voice-agent/memories`` when ``VOICE_AGENT_HOME`` is
+    unset — tests construct a ``MemoryLayer()`` before
+    ``voice_bot.set_agent_home()`` runs.
     """
-    import os
-    home = os.environ.get("VOICE_AGENT_HOME", str(Path(".voice-agent")))
-    d = Path(home) / "memories"
-    d.mkdir(parents=True, exist_ok=True)
-    return d.expanduser().resolve()
+    try:
+        return _agent_memories_dir()
+    except RuntimeError:
+        d = Path(".voice-agent") / "memories"
+        d.mkdir(parents=True, exist_ok=True)
+        return d.expanduser().resolve()
 
 # Character limits — voice context is small, so keep these tight.
 USER_CHAR_LIMIT = 1375
@@ -52,13 +58,11 @@ MEMORY_CHAR_LIMIT = 2200
 
 
 # ---------------------------------------------------------------------------
-# Shared accessor — single MemoryLayer instance for the whole process.
+# Shared accessor — one MemoryLayer per process.
 #
-# Without this, ``tools.memory`` constructed one ``MemoryLayer()`` at import
-# time while ``PromptBuilder`` constructed another against
-# ``agent_home / "memories"``. If ``VOICE_AGENT_HOME`` was set after the
-# import-time instance was built (or to a different value), the two pointed
-# at divergent files and writes from the tool never appeared in the prompt.
+# Without this, ``MemoryTool`` and ``PromptBuilder`` could construct separate
+# instances against different base paths and writes from the tool would never
+# appear in the prompt snapshot.
 # ---------------------------------------------------------------------------
 
 _shared_layer: "MemoryLayer | None" = None

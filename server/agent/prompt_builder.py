@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-from tools.memory_layer import MemoryLayer, get_memory_layer
+from agent.memory_layer import MemoryLayer, get_memory_layer
 from agent.paths import agent_home as _agent_home, skills_dir as _skills_dir
 
 # Fallback identity when SOUL.md is missing or empty.

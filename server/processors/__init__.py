@@ -9,5 +9,9 @@ Each module is a single FrameProcessor (or a tight cluster around one):
 
 from processors.echo_suppressor import EchoSuppressor  # noqa: F401
 from processors.latency_tracer import LatencyTracer  # noqa: F401
-from processors.session_log import SessionLog, SessionLogProcessor  # noqa: F401
+from processors.session_log import (  # noqa: F401
+    LLMUsageLogProcessor,
+    SessionLog,
+    SessionLogProcessor,
+)
 from processors.wake_word import WakeWordGate  # noqa: F401

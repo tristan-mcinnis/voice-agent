@@ -5,12 +5,12 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from tools.memory_layer import (
+from agent.memory_layer import (
     MemoryLayer,
     USER_CHAR_LIMIT,
     MEMORY_CHAR_LIMIT,
 )
-from tools.memory_layer import _load_entries, _save_entries, _total_chars, _limit_for
+from agent.memory_layer import _load_entries, _save_entries, _total_chars, _limit_for
 
 
 class TestLoadSaveEntries:
@@ -191,7 +191,7 @@ class TestAtomicWrite:
         original = path.read_text()
 
         # Force the next save to fail mid-flight (after fsync, before rename).
-        import tools.memory_layer as ml
+        import agent.memory_layer as ml
         real_replace = ml.os.replace
         def boom(*args, **kwargs):
             raise OSError("simulated disk error")

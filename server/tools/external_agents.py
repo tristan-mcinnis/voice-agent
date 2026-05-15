@@ -1,38 +1,34 @@
 """External-agent tools — consult other LLMs and spawn coding agents from voice.
 
-Three tiers, all registered as standard `BaseTool` subclasses so they show up
-in the same capability summary as everything else:
+The provider catalog lives in ``config.yaml`` under ``agents:``. The dynamic
+factory in this module walks that catalog at registration time and emits one
+``BaseTool`` per entry, so adding a new model or CLI is a YAML-only change.
 
-Tier 1 — sync "ask another model" (blocking, 2–10s):
-    ask_kimi               Moonshot k2.6 / kimi-k2.6 — second opinion text Q&A
-    ask_deepseek_reasoner  DeepSeek with thinking ON — for hard reasoning
-    ask_gemini             Google Gemini via the v1beta REST API
+Three tiers, all registered on the same ``REGISTRY`` and grouped under the
+``agents`` category in the capability summary:
 
-Tier 2 — fire-and-forget coding agents (returns task_id immediately):
-    spawn_claude_code      shells out to `claude -p <task>`
-    spawn_codex            shells out to `codex exec <task>`
-    spawn_gemini_cli       shells out to `gemini <task>`
+Tier 1 — sync "ask another model" (one tool per ``agents.consult.<key>``):
+    ask_<key>              OpenAI-compatible chat call, returns text.
 
-Tier 3 — Hermes peer (the user's local agent at http://...):
-    hermes_chat            sync POST to Hermes /chat endpoint
-    hermes_spawn           async task spawn against Hermes
+Tier 2 — fire-and-forget coding agents (one tool per ``agents.coding.<key>``):
+    spawn_<key>            forks a CLI subprocess, returns a ``task_id``.
 
-Task management (shared across all spawn_* tools):
-    list_agent_tasks
-    get_agent_task
-    cancel_agent_task
+Tier 3 — Hermes peer (static, single instance — there is only one Hermes):
+    hermes_chat            sync chat call.
+    hermes_spawn           async task POST.
 
-Configuration lives in `config.yaml` under `agents:`. Every endpoint, model,
-and binary path is overridable there — no code changes needed to retarget.
+Task management (shared across every spawn tool):
+    list_agent_tasks, get_agent_task, cancel_agent_task.
 
 Missing api keys / missing binaries are non-fatal: the tool stays registered
 (so the LLM knows it exists) and returns a useful error string when called.
-That's the same "graceful degradation" pattern the vision chain uses.
+That mirrors the vision-chain graceful-degradation pattern.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Optional
@@ -56,7 +52,7 @@ from tools.registry import BaseTool, REGISTRY
 
 
 def _agents_cfg() -> Any:
-    """Return `Config.agents` or a stub so tools degrade rather than crash."""
+    """Return ``Config.agents`` or ``None`` so tools degrade rather than crash."""
     try:
         return get_config().agents
     except (RuntimeError, AttributeError):
@@ -74,10 +70,8 @@ def _openai_chat(
 ) -> str:
     """Minimal OpenAI-compatible chat completion. Returns the assistant text.
 
-    Used by every Tier 1 consult tool plus `hermes_chat` (Hermes speaks an
-    OpenAI-compatible chat schema). Reasoning-model handling: some providers
-    return the final answer in `message.content`, some in
-    `message.reasoning_content`. We try both.
+    Reasoning-model handling: some providers return the final answer in
+    ``message.content``, others in ``message.reasoning_content``. Try both.
     """
     payload: dict[str, Any] = {
         "model": model,
@@ -103,7 +97,7 @@ def _openai_chat(
 
 
 def _consult(provider_cfg, prompt: str) -> str:
-    """Tier 1 dispatch — looks up the named consult provider and calls it."""
+    """Tier 1 dispatch — calls the named consult provider."""
     if provider_cfg is None:
         return "Consult unavailable: this provider is not configured."
     api_key = ""
@@ -128,7 +122,7 @@ def _consult(provider_cfg, prompt: str) -> str:
 
 
 def _binary_path(bin_name: str) -> Optional[str]:
-    """Resolve a binary by absolute path or PATH lookup. Returns None if missing."""
+    """Resolve a binary by absolute path or PATH lookup. ``None`` if missing."""
     if not bin_name:
         return None
     if os.path.sep in bin_name and os.path.isfile(bin_name):
@@ -137,114 +131,79 @@ def _binary_path(bin_name: str) -> Optional[str]:
 
 
 def _default_cwd(cwd: Optional[str]) -> str:
-    """Normalise the `cwd:` arg into a real directory. Defaults to project root."""
+    """Normalise the ``cwd:`` arg into a real directory. Defaults to project root."""
     if cwd:
         p = Path(cwd).expanduser()
     else:
-        # Project root = the dir containing server/ — same convention used by
-        # voice_bot.set_agent_home().
         p = Path(__file__).resolve().parent.parent.parent
     if not p.exists() or not p.is_dir():
-        # Fall back rather than failing — the agent CLI will error usefully.
         return str(Path.cwd())
     return str(p)
 
 
-# ---------------------------------------------------------------------------
-# Tier 1 — synchronous consultations
-# ---------------------------------------------------------------------------
+_TITLE_RE = re.compile(r"[_-]+")
 
 
-@REGISTRY.register
-class AskKimiTool(BaseTool):
-    name = "ask_kimi"
-    category = "agents"
-    speak_text = "Let me ask Kimi."
-    description = (
-        "Ask Moonshot's Kimi (kimi-k2.6) for a second opinion. "
-        "Useful for fact checks, alternative phrasings, or cross-model "
-        "validation. Blocks for a few seconds; returns plain text."
-    )
-    parameters = {
-        "prompt": {
-            "type": "string",
-            "description": "The full question or task. Provide context — "
-            "Kimi has no access to the current conversation.",
-        },
-    }
-    required = ["prompt"]
-
-    def execute(self, prompt: str) -> str:
-        cfg = _agents_cfg()
-        if cfg is None:
-            return "ask_kimi unavailable: `agents` block missing from config.yaml."
-        return _consult(cfg.consult.get("kimi"), prompt)
-
-
-@REGISTRY.register
-class AskDeepSeekReasonerTool(BaseTool):
-    name = "ask_deepseek_reasoner"
-    category = "agents"
-    speak_text = "Let me think harder on that."
-    description = (
-        "Ask DeepSeek with thinking enabled (deepseek-reasoner) — the same "
-        "provider the voice bot uses, but with chain-of-thought turned on. "
-        "Use for hard reasoning, multi-step problems, or anything where the "
-        "fast voice model would shortcut. Blocks for 10–30 seconds."
-    )
-    parameters = {
-        "prompt": {
-            "type": "string",
-            "description": "The reasoning task. Include all necessary context.",
-        },
-    }
-    required = ["prompt"]
-
-    def execute(self, prompt: str) -> str:
-        cfg = _agents_cfg()
-        if cfg is None:
-            return "ask_deepseek_reasoner unavailable: `agents` block missing from config.yaml."
-        return _consult(cfg.consult.get("deepseek_reasoner"), prompt)
-
-
-@REGISTRY.register
-class AskGeminiTool(BaseTool):
-    name = "ask_gemini"
-    category = "agents"
-    speak_text = "Let me ask Gemini."
-    description = (
-        "Ask Google Gemini for a second opinion. Different model family from "
-        "the voice bot, useful when you want fundamentally different "
-        "reasoning. Blocks for a few seconds."
-    )
-    parameters = {
-        "prompt": {
-            "type": "string",
-            "description": "The question. Provide full context.",
-        },
-    }
-    required = ["prompt"]
-
-    def execute(self, prompt: str) -> str:
-        cfg = _agents_cfg()
-        if cfg is None:
-            return "ask_gemini unavailable: `agents` block missing from config.yaml."
-        return _consult(cfg.consult.get("gemini"), prompt)
+def _humanise(key: str) -> str:
+    """``deepseek_reasoner`` → ``Deepseek Reasoner`` for default speak/description text."""
+    return _TITLE_RE.sub(" ", key).strip().title()
 
 
 # ---------------------------------------------------------------------------
-# Tier 2 — fire-and-forget coding agents
+# Tier 1 — Consult: one dynamic tool per `agents.consult.<key>`
+# ---------------------------------------------------------------------------
+
+
+def _make_consult_tool(key: str, provider_cfg) -> type[BaseTool]:
+    """Build a ``BaseTool`` subclass for one consult provider."""
+    friendly = provider_cfg.name or _humanise(key)
+    description = provider_cfg.description or (
+        f"Ask {friendly} ({provider_cfg.model}) for a second opinion. "
+        f"Different model from the voice path — useful for fact checks, "
+        f"alternative phrasings, or cross-model validation. Blocks until "
+        f"the response returns; provide full context in the prompt."
+    )
+    speak_text = provider_cfg.speak_text or f"Let me ask {friendly}."
+    tool_name = f"ask_{key}"
+
+    class _ConsultTool(BaseTool):
+        name = tool_name
+        category = "agents"
+        description = ""  # placeholder so dataclass-style assignment below works
+        parameters = {
+            "prompt": {
+                "type": "string",
+                "description": (
+                    "The full question or task. Include necessary context — "
+                    f"{friendly} has no access to the current conversation."
+                ),
+            },
+        }
+        required = ["prompt"]
+
+        def execute(self, prompt: str) -> str:
+            cfg = _agents_cfg()
+            if cfg is None or key not in cfg.consult:
+                return f"{tool_name} unavailable: not configured in config.yaml."
+            return _consult(cfg.consult[key], prompt)
+
+    _ConsultTool.__name__ = f"AskTool_{key}"
+    _ConsultTool.description = description
+    _ConsultTool.speak_text = speak_text
+    return _ConsultTool
+
+
+# ---------------------------------------------------------------------------
+# Tier 2 — Coding-agent spawn: one dynamic tool per `agents.coding.<key>`
 # ---------------------------------------------------------------------------
 
 
 def _spawn_coding_agent(*, key: str, friendly: str, task: str, cwd: Optional[str]) -> dict:
-    """Look up the coding-agent config for `key`, resolve the binary, spawn."""
+    """Resolve the coding-agent config, check binary + concurrency, spawn."""
     cfg = _agents_cfg()
-    if cfg is None:
-        return {"error": f"spawn_{key} unavailable: `agents` block missing from config.yaml."}
-    agent_cfg = cfg.coding.get(key)
-    if agent_cfg is None:
-        return {"error": f"spawn_{key} unavailable: `agents.coding.{key}` not configured."}
+    if cfg is None or key not in cfg.coding:
+        return {"error": f"spawn_{key} unavailable: not configured in config.yaml."}
+    agent_cfg = cfg.coding[key]
     bin_path = _binary_path(agent_cfg.bin)
     if bin_path is None:
         return {
@@ -253,12 +212,13 @@ def _spawn_coding_agent(*, key: str, friendly: str, task: str, cwd: Optional[str
                 f"Install it and try again."
             )
         }
-    argv = [bin_path, *agent_cfg.default_args, task] if agent_cfg.task_as_arg else [
-        bin_path, *agent_cfg.default_args
-    ]
+    argv = (
+        [bin_path, *agent_cfg.default_args, task]
+        if agent_cfg.task_as_arg
+        else [bin_path, *agent_cfg.default_args]
+    )
     stdin = None if agent_cfg.task_as_arg else task
 
-    # Concurrency cap — refuse to spawn if we'd exceed it.
     if cfg.max_concurrent > 0:
         running = sum(
             1 for m in TaskStore().list_meta() if reconcile_status(m).status == "running"
@@ -294,84 +254,73 @@ def _spawn_coding_agent(*, key: str, friendly: str, task: str, cwd: Optional[str
     }
 
 
-@REGISTRY.register
-class SpawnClaudeCodeTool(BaseTool):
-    name = "spawn_claude_code"
-    category = "agents"
-    speak_text = "Kicking off Claude Code."
-    description = (
-        "Spawn Anthropic's Claude Code CLI on a coding task in the background. "
-        "Returns immediately with a task_id; the agent runs for "
-        "30 seconds to several minutes. Check progress with get_agent_task."
+def _make_spawn_tool(key: str, agent_cfg) -> type[BaseTool]:
+    """Build a ``BaseTool`` subclass for one coding-agent spawn target."""
+    friendly = agent_cfg.friendly or _humanise(key)
+    description = agent_cfg.description or (
+        f"Spawn {friendly} (`{agent_cfg.bin}`) on a coding task in the background. "
+        f"Returns immediately with a task_id; the agent runs for "
+        f"30 seconds to several minutes. Check progress with get_agent_task."
     )
-    parameters = {
-        "task": {
-            "type": "string",
-            "description": "Plain-English coding task — what you want Claude Code to do.",
-        },
-        "cwd": {
-            "type": "string",
-            "description": "Working directory for the agent. Defaults to the project root.",
-        },
-    }
-    required = ["task"]
+    speak_text = agent_cfg.speak_text or f"Kicking off {friendly}."
+    tool_name = f"spawn_{key}"
 
-    def execute(self, task: str, cwd: Optional[str] = None) -> dict:
-        return _spawn_coding_agent(key="claude_code", friendly="Claude Code", task=task, cwd=cwd)
+    class _SpawnTool(BaseTool):
+        name = tool_name
+        category = "agents"
+        description = ""
+        parameters = {
+            "task": {
+                "type": "string",
+                "description": f"Plain-English coding task — what you want {friendly} to do.",
+            },
+            "cwd": {
+                "type": "string",
+                "description": "Working directory for the agent. Defaults to the project root.",
+            },
+        }
+        required = ["task"]
 
+        def execute(self, task: str, cwd: Optional[str] = None) -> dict:
+            return _spawn_coding_agent(key=key, friendly=friendly, task=task, cwd=cwd)
 
-@REGISTRY.register
-class SpawnCodexTool(BaseTool):
-    name = "spawn_codex"
-    category = "agents"
-    speak_text = "Kicking off Codex."
-    description = (
-        "Spawn OpenAI's Codex CLI on a coding task in the background. "
-        "Returns immediately with a task_id. Check progress with get_agent_task."
-    )
-    parameters = {
-        "task": {
-            "type": "string",
-            "description": "Plain-English coding task — what you want Codex to do.",
-        },
-        "cwd": {
-            "type": "string",
-            "description": "Working directory for the agent. Defaults to the project root.",
-        },
-    }
-    required = ["task"]
-
-    def execute(self, task: str, cwd: Optional[str] = None) -> dict:
-        return _spawn_coding_agent(key="codex", friendly="Codex", task=task, cwd=cwd)
-
-
-@REGISTRY.register
-class SpawnGeminiCliTool(BaseTool):
-    name = "spawn_gemini_cli"
-    category = "agents"
-    speak_text = "Kicking off Gemini CLI."
-    description = (
-        "Spawn Google's Gemini CLI on a coding task in the background. "
-        "Returns immediately with a task_id. Check progress with get_agent_task."
-    )
-    parameters = {
-        "task": {
-            "type": "string",
-            "description": "Plain-English coding task — what you want Gemini CLI to do.",
-        },
-        "cwd": {
-            "type": "string",
-            "description": "Working directory for the agent. Defaults to the project root.",
-        },
-    }
-    required = ["task"]
-
-    def execute(self, task: str, cwd: Optional[str] = None) -> dict:
-        return _spawn_coding_agent(key="gemini_cli", friendly="Gemini CLI", task=task, cwd=cwd)
+    _SpawnTool.__name__ = f"SpawnTool_{key}"
+    _SpawnTool.description = description
+    _SpawnTool.speak_text = speak_text
+    return _SpawnTool
 
 
 # ---------------------------------------------------------------------------
-# Task management
+# Dynamic registration — call from `tools.register_all()` after config loads.
+# ---------------------------------------------------------------------------
+
+
+def register_dynamic_tools() -> None:
+    """Walk ``config.agents.consult`` and ``.coding`` and register one tool each.
+
+    Idempotent: re-registering a tool with the same name raises in the
+    registry, so this should only be called once at startup.
+    """
+    cfg = _agents_cfg()
+    if cfg is None:
+        logger.info("external_agents: no `agents` block in config.yaml — skipping")
+        return
+    consult_count = 0
+    for key, provider in cfg.consult.items():
+        REGISTRY.register(_make_consult_tool(key, provider))
+        consult_count += 1
+    spawn_count = 0
+    for key, agent_cfg in cfg.coding.items():
+        REGISTRY.register(_make_spawn_tool(key, agent_cfg))
+        spawn_count += 1
+    logger.info(
+        f"external_agents: registered {consult_count} consult tool(s), "
+        f"{spawn_count} spawn tool(s)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task management — static, shared across every spawn target
 # ---------------------------------------------------------------------------
 
 
@@ -495,7 +444,7 @@ class CancelAgentTaskTool(BaseTool):
 
 
 # ---------------------------------------------------------------------------
-# Tier 3 — Hermes peer
+# Tier 3 — Hermes peer (one instance; static class still cheapest)
 # ---------------------------------------------------------------------------
 
 

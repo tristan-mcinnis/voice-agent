@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Optional
 
 from tools.registry import BaseTool, REGISTRY
-from tools.memory_layer import (  # noqa: F401  # re-exported
+from agent.memory_layer import (  # noqa: F401  # re-exported
     MemoryLayer,
     USER_CHAR_LIMIT,
     MEMORY_CHAR_LIMIT,

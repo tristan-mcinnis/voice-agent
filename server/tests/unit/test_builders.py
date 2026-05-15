@@ -40,6 +40,7 @@ def _make_config(**overrides) -> Config:
         turn=__import__("config").TurnConfig(),
         hotkey=__import__("config").HotkeyConfig(),
         computer_use=__import__("config").ComputerUseConfig(),
+        agents=__import__("config").AgentsConfig(),
     )
     defaults.update(overrides)
     return Config(**defaults)

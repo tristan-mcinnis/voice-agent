@@ -30,6 +30,11 @@ import tools
 tools.register_all()  # explicit registration — no more import-time side effects
 
 
+def T(name: str):
+    """Resolve a registered tool to its bound ``execute`` method."""
+    return tools.REGISTRY.get(name).execute
+
+
 PASS = "PASS"
 FAIL = "FAIL"
 SKIP = "SKIP"
@@ -79,77 +84,77 @@ def main() -> int:
     want_computer = "--computer-use" in sys.argv
 
     # --- Text ---------------------------------------------------------------
-    run("read_clipboard", tools.read_clipboard)
-    run("read_selected_text", tools.read_selected_text)
-    run("read_focused_input", tools.read_focused_input)
+    run("read_clipboard", T("read_clipboard"))
+    run("read_selected_text", T("read_selected_text"))
+    run("read_focused_input", T("read_focused_input"))
 
     # --- File system --------------------------------------------------------
     here = Path(__file__).resolve().parent
-    run("read_file (this script)", tools.read_file, str(__file__))
-    run("read_file (offset/limit)", tools.read_file, str(__file__), 1, 5)
-    run("read_file (nonexistent)", tools.read_file, "/no/such/path/__voice_bot_missing__")
-    run("read_file (directory)", tools.read_file, str(here))
-    run("list_folder (server dir)", tools.list_folder, str(here))
+    run("read_file (this script)", T("read_file"), str(__file__))
+    run("read_file (offset/limit)", T("read_file"), str(__file__), 1, 5)
+    run("read_file (nonexistent)", T("read_file"), "/no/such/path/__voice_bot_missing__")
+    run("read_file (directory)", T("read_file"), str(here))
+    run("list_folder (server dir)", T("list_folder"), str(here))
     if (here / "assets").exists():
-        run("list_folder (recursive assets)", tools.list_folder, str(here / "assets"), True)
-    run("list_folder (nonexistent)", tools.list_folder, "/no/such/folder/__missing__")
-    run("read_finder_selection", tools.read_finder_selection)
+        run("list_folder (recursive assets)", T("list_folder"), str(here / "assets"), True)
+    run("list_folder (nonexistent)", T("list_folder"), "/no/such/folder/__missing__")
+    run("read_finder_selection", T("read_finder_selection"))
 
     # --- File mutation (sandbox in /tmp) -------------------------------------
     import tempfile
     with tempfile.TemporaryDirectory(prefix="voice-bot-test-") as sandbox:
         sb = Path(sandbox)
         f1 = sb / "sub" / "hello.py"
-        run("write_file (creates parents)", tools.write_file, str(f1), "def hi():\n    return 1\n")
-        run("append_to_file", tools.append_to_file, str(f1), "# trailing\n")
-        run("file_info (existing)", tools.file_info, str(f1))
-        run("file_info (missing)", tools.file_info, "/no/such/file")
-        run("patch (fuzzy + diff + syntax)", tools.patch_file, str(f1), "return 1", "return 42")
-        run("patch (non-unique fail)", tools.patch_file, str(f1), "def", "DEF")
-        run("make_directory", tools.make_directory, str(sb / "newdir/a/b"))
-        run("copy_path (file)", tools.copy_path, str(f1), str(sb / "copy.py"))
-        run("copy_path (dir recursive)", tools.copy_path, str(sb / "newdir"), str(sb / "newdir-copy"))
-        run("move_path", tools.move_path, str(f1), str(sb / "moved.py"))
-        run("delete_path (file)", tools.delete_path, str(sb / "moved.py"))
-        run("delete_path (dir refuses without recursive)", tools.delete_path, str(sb / "newdir"))
-        run("delete_path (dir recursive)", tools.delete_path, str(sb / "newdir"), True)
-        run("delete_path (refuses $HOME)", tools.delete_path, str(Path.home()))
-        run("search_files (content)", tools.search_files, "content", "return 42", str(sb))
-        run("search_files (filename)", tools.search_files, "filename", "*.py", str(sb))
+        run("write_file (creates parents)", T("write_file"), str(f1), "def hi():\n    return 1\n")
+        run("append_to_file", T("append_to_file"), str(f1), "# trailing\n")
+        run("file_info (existing)", T("file_info"), str(f1))
+        run("file_info (missing)", T("file_info"), "/no/such/file")
+        run("patch (fuzzy + diff + syntax)", T("patch"), str(f1), "return 1", "return 42")
+        run("patch (non-unique fail)", T("patch"), str(f1), "def", "DEF")
+        run("make_directory", T("make_directory"), str(sb / "newdir/a/b"))
+        run("copy_path (file)", T("copy_path"), str(f1), str(sb / "copy.py"))
+        run("copy_path (dir recursive)", T("copy_path"), str(sb / "newdir"), str(sb / "newdir-copy"))
+        run("move_path", T("move_path"), str(f1), str(sb / "moved.py"))
+        run("delete_path (file)", T("delete_path"), str(sb / "moved.py"))
+        run("delete_path (dir refuses without recursive)", T("delete_path"), str(sb / "newdir"))
+        run("delete_path (dir recursive)", T("delete_path"), str(sb / "newdir"), True)
+        run("delete_path (refuses $HOME)", T("delete_path"), str(Path.home()))
+        run("search_files (content)", T("search_files"), "content", "return 42", str(sb))
+        run("search_files (filename)", T("search_files"), "filename", "*.py", str(sb))
 
         # Hard cap on list_folder regardless of LLM-supplied max_items
         big = sb / "many"; big.mkdir()
         for i in range(60):
             (big / f"f{i:02d}.txt").touch()
-        run("list_folder (hard cap 30 vs requested 50)", tools.list_folder, str(big), False, 50)
+        run("list_folder (hard cap 30 vs requested 50)", T("list_folder"), str(big), False, 50)
 
     # --- run_terminal_command -----------------------------------------------
-    run("run_terminal_command (basic)", tools.run_terminal_command, "echo hello && pwd", 5, "/tmp")
-    run("run_terminal_command (timeout)", tools.run_terminal_command, "sleep 5", 1)
+    run("run_terminal_command (basic)", T("run_terminal_command"), "echo hello && pwd", 5, "/tmp")
+    run("run_terminal_command (timeout)", T("run_terminal_command"), "sleep 5", 1)
     run("run_terminal_command (stdout cap)",
-        tools.run_terminal_command,
+        T("run_terminal_command"),
         "for i in $(seq 1 500); do echo line-$i-padding; done", 10)
     run("run_terminal_command (stderr captured)",
-        tools.run_terminal_command, "ls /no/such/path 2>&1 1>/dev/null; echo done >&2", 5)
+        T("run_terminal_command"), "ls /no/such/path 2>&1 1>/dev/null; echo done >&2", 5)
 
     # --- Browser ------------------------------------------------------------
-    run("read_browser_url", tools.read_browser_url)
-    run("read_browser_page_text", tools.read_browser_page_text)
-    run("list_browser_tabs", tools.list_browser_tabs)
+    run("read_browser_url", T("read_browser_url"))
+    run("read_browser_page_text", T("read_browser_page_text"))
+    run("list_browser_tabs", T("list_browser_tabs"))
 
     # --- System -------------------------------------------------------------
-    run("get_frontmost_app", tools.get_frontmost_app)
-    run("list_running_apps", tools.list_running_apps)
+    run("get_frontmost_app", T("get_frontmost_app"))
+    run("list_running_apps", T("list_running_apps"))
 
     # --- Terminal -----------------------------------------------------------
-    run("read_terminal_output", tools.read_terminal_output)
+    run("read_terminal_output", T("read_terminal_output"))
 
     # --- Capture (vision) ---------------------------------------------------
     if want_vision:
-        run("take_screenshot", tools.take_screenshot, "")
-        run("capture_frontmost_window", tools.capture_frontmost_window, "What window is this?")
-        run("capture_screen_region (top-left 400x400)", tools.capture_screen_region, 0, 0, 400, 400)
-        run("capture_display (1)", tools.capture_display, 1)
+        run("take_screenshot", T("take_screenshot"), "")
+        run("capture_frontmost_window", T("capture_frontmost_window"), "What window is this?")
+        run("capture_screen_region (top-left 400x400)", T("capture_screen_region"), 0, 0, 400, 400)
+        run("capture_display (1)", T("capture_display"), 1)
     else:
         skip("take_screenshot", "pass --vision to run (calls vision provider)")
         skip("capture_frontmost_window", "pass --vision to run (calls vision provider)")
@@ -157,24 +162,24 @@ def main() -> int:
         skip("capture_display", "pass --vision to run (calls vision provider)")
 
     if want_webcam:
-        run("capture_webcam", tools.capture_webcam, "")
+        run("capture_webcam", T("capture_webcam"), "")
     else:
         skip("capture_webcam", "pass --webcam to run")
 
     # --- Web search ---------------------------------------------------------
     if os.getenv("SERPER_API_KEY"):
-        run("web_search", tools.web_search, "Pipecat AI voice bot", 3)
+        run("web_search", T("web_search"), "Pipecat AI voice bot", 3)
     else:
         skip("web_search", "SERPER_API_KEY not set")
 
     # --- Demo ---------------------------------------------------------------
-    run("get_current_weather", tools.get_current_weather, "San Francisco, CA", "fahrenheit")
+    run("get_current_weather", T("get_current_weather"), "San Francisco, CA", "fahrenheit")
 
     # --- Computer-use -------------------------------------------------------
     # Read-only by default (list_ui_elements is non-destructive). The mouse/key
     # tools are gated behind --computer-use because they actually move things.
-    run("list_ui_elements (frontmost app)", tools.list_ui_elements)
-    run("list_ui_elements (filter='button')", tools.list_ui_elements, "button")
+    run("list_ui_elements (frontmost app)", T("list_ui_elements"))
+    run("list_ui_elements (filter='button')", T("list_ui_elements"), "button")
 
     if want_computer:
         # Move the cursor and put it back — proves pyautogui is wired up.
@@ -182,8 +187,8 @@ def main() -> int:
             import pyautogui
             origin = pyautogui.position()
             run("mouse_move (+5px and back)", lambda: (
-                tools.mouse_move(origin.x + 5, origin.y, duration=0.05),
-                tools.mouse_move(origin.x, origin.y, duration=0.05),
+                T("mouse_move")(origin.x + 5, origin.y, duration=0.05),
+                T("mouse_move")(origin.x, origin.y, duration=0.05),
             )[1])
         except ImportError:
             skip("mouse_move", "pyautogui not installed")

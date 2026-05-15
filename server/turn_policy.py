@@ -76,6 +76,7 @@ from connection_rendezvous import ConnectionRendezvous
 from processors import (
     EchoSuppressor,
     LatencyTracer,
+    LLMUsageLogProcessor,
     SessionLog,
     SessionLogProcessor,
     WakeWordGate,
@@ -114,10 +115,10 @@ class LocalAudioTurnPolicy:
         )
         self.wake_gate = WakeWordGate(self.config.wake_word)
         self.log_proc_pre = SessionLogProcessor(self.session_log)
-        # post-LLM instance is the one that captures LLM usage MetricsFrames.
-        # Single owner so we don't double-count cache hits across the two
-        # SessionLogProcessor instances.
-        self.log_proc_post = SessionLogProcessor(self.session_log, track_usage=True)
+        self.log_proc_post = SessionLogProcessor(self.session_log)
+        # LLM token-usage logging lives in its own processor — single owner
+        # so we don't double-count cache hits when MetricsFrames propagate.
+        self.usage_log = LLMUsageLogProcessor(self.session_log)
         self.latency_tracer = LatencyTracer(self.session_log)
 
     # ------------------------------------------------------------------
@@ -213,7 +214,7 @@ class LocalAudioTurnPolicy:
 
     def processors_post_llm(self) -> list:
         """Stages between the LLM and TTS."""
-        return [self.log_proc_post]
+        return [self.log_proc_post, self.usage_log]
 
     # ------------------------------------------------------------------
     # Lifecycle — connection rendezvous + diagnostics
