@@ -142,6 +142,56 @@ class HotkeyConfig:
 
 
 @dataclass(frozen=True)
+class ConsultProviderConfig:
+    """One Tier 1 consult target — an OpenAI-compatible chat endpoint.
+
+    Tier 1 = synchronous "ask another model" calls (`ask_kimi`,
+    `ask_deepseek_reasoner`, `ask_gemini`). Each provider here is dispatched
+    via `tools.external_agents._consult`.
+    """
+    name: str
+    base_url: str
+    model: str
+    api_key_env: str = ""
+    timeout: float = 60.0
+    # Provider-specific knobs merged into the chat-completions body.
+    # DeepSeek uses this to enable `thinking`, etc.
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class CodingAgentConfig:
+    """One Tier 2 spawn target — a CLI binary that runs a coding task.
+
+    `task_as_arg=True` (default) appends the task string as a positional
+    argument: `<bin> <default_args...> <task>`. Set to `False` to pipe the
+    task through stdin instead (some CLIs prefer that).
+    """
+    bin: str
+    default_args: list[str] = field(default_factory=list)
+    task_as_arg: bool = True
+
+
+@dataclass(frozen=True)
+class HermesConfig:
+    """Tier 3 — connection to a local Hermes agent."""
+    base_url: str = "http://localhost:8000"
+    model: str = "hermes"
+    api_key_env: str = "HERMES_API_KEY"
+    spawn_path: str = "/tasks"
+    timeout: float = 60.0
+
+
+@dataclass(frozen=True)
+class AgentsConfig:
+    """Connect-and-delegate config. See `tools/external_agents.py`."""
+    max_concurrent: int = 3
+    consult: dict[str, ConsultProviderConfig] = field(default_factory=dict)
+    coding: dict[str, CodingAgentConfig] = field(default_factory=dict)
+    hermes: Optional[HermesConfig] = None
+
+
+@dataclass(frozen=True)
 class ComputerUseConfig:
     """Actuation backend for click/type/key/scroll/move.
 
@@ -170,6 +220,7 @@ class Config:
     turn: TurnConfig
     hotkey: HotkeyConfig
     computer_use: ComputerUseConfig
+    agents: AgentsConfig
 
 
 def _parse_config(path: Path) -> Config:
@@ -198,6 +249,25 @@ def _parse_config(path: Path) -> Config:
     computer_use_raw = data.get("computer_use") or {}
     computer_use = ComputerUseConfig(**computer_use_raw)
 
+    agents_raw = data.get("agents") or {}
+    consult_raw = agents_raw.get("consult") or {}
+    consult: dict[str, ConsultProviderConfig] = {}
+    for key, val in consult_raw.items():
+        # Each consult entry may omit `name`; default to the dict key.
+        val = dict(val)
+        val.setdefault("name", key)
+        consult[key] = ConsultProviderConfig(**val)
+    coding_raw = agents_raw.get("coding") or {}
+    coding = {key: CodingAgentConfig(**val) for key, val in coding_raw.items()}
+    hermes_raw = agents_raw.get("hermes")
+    hermes = HermesConfig(**hermes_raw) if hermes_raw else None
+    agents = AgentsConfig(
+        max_concurrent=int(agents_raw.get("max_concurrent", 3)),
+        consult=consult,
+        coding=coding,
+        hermes=hermes,
+    )
+
     return Config(
         llm=LLMConfig(**data["llm"]),
         stt=STTConfig(**data["stt"]),
@@ -209,6 +279,7 @@ def _parse_config(path: Path) -> Config:
         turn=turn,
         hotkey=hotkey,
         computer_use=computer_use,
+        agents=agents,
     )
 
 

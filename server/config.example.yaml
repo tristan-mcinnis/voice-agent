@@ -156,6 +156,77 @@ computer_use:
   cua_binary: cua-driver    # name on PATH, or absolute path
   cua_timeout: 10.0         # seconds per cua-driver RPC
 
+# External agents — connect the voice bot to other LLMs and coding agents so
+# it can ask them questions or delegate long-running tasks. See
+# tools/external_agents.py for details on each tool. Three tiers:
+#
+#   consult: blocking "ask another model" calls — second opinions, harder
+#            reasoning, alternative voices. Returns text within ~10s.
+#   coding:  fire-and-forget CLI agents (Claude Code, Codex, Gemini CLI).
+#            Returns a task_id immediately; check progress with get_agent_task.
+#   hermes:  peer agent over HTTP (your local Hermes instance).
+#
+# Missing API keys or missing binaries don't crash the bot — the tool stays
+# registered and returns a useful error string when called. Same pattern as
+# the vision chain.
+agents:
+  # Hard cap on concurrent background coding agents. Set to 0 to disable.
+  # When the cap is reached, spawn_* tools refuse with an instructive error.
+  max_concurrent: 3
+
+  consult:
+    kimi:
+      base_url: https://api.moonshot.cn/v1
+      model: kimi-k2.6
+      api_key_env: MOONSHOT_API_KEY
+      timeout: 60.0
+    deepseek_reasoner:
+      base_url: https://api.deepseek.com/v1
+      model: deepseek-reasoner
+      api_key_env: DEEPSEEK_API_KEY
+      timeout: 120.0
+      # DeepSeek's thinking is ON for this consult tool — that's the whole
+      # point (voice path uses thinking=disabled for latency).
+      extra:
+        extra_body:
+          thinking:
+            type: enabled
+    gemini:
+      # Gemini's OpenAI-compatible endpoint. Drop in the API key as
+      # GEMINI_API_KEY (works with AI Studio keys).
+      base_url: https://generativelanguage.googleapis.com/v1beta/openai
+      model: gemini-3-pro
+      api_key_env: GEMINI_API_KEY
+      timeout: 60.0
+
+  coding:
+    claude_code:
+      bin: claude
+      # `claude -p <task>` runs in print mode — single-shot, prints to stdout,
+      # exits. Drop --output-format json/stream-json here if you want
+      # structured output.
+      default_args: ["-p"]
+      task_as_arg: true
+    codex:
+      bin: codex
+      default_args: ["exec"]
+      task_as_arg: true
+    gemini_cli:
+      bin: gemini
+      default_args: ["-p"]
+      task_as_arg: true
+
+  # Hermes peer — set base_url to wherever your local Hermes is bound.
+  # Speaks an OpenAI-compatible chat schema; `spawn_path` is the
+  # POST endpoint for long-running tasks (consult Hermes docs for the
+  # exact path on your install).
+  hermes:
+    base_url: http://localhost:8000
+    model: hermes
+    api_key_env: HERMES_API_KEY
+    spawn_path: /tasks
+    timeout: 60.0
+
 # System prompt the LLM sees at conversation start. Swap freely.
 system_prompt: |
   You are a friendly multimodal voice assistant.
