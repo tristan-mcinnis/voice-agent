@@ -30,6 +30,8 @@ server/
     web.py                web search, weather demo + tool classes (impl in execute())
     memory.py             memory tool (add/replace/list USER.md, MEMORY.md)
     search_history.py     search past session logs for conversation recall
+    agent_runner.py       background subprocess engine (spawn/tail/cancel)
+    external_agents.py    consult + spawn tools for Kimi/DeepSeek/Gemini/Claude Code/Codex/Hermes
 
   processors/             pipeline FrameProcessor stages
     echo_suppressor.py    drops STT frames while bot speaks
@@ -191,6 +193,21 @@ Key facts:
 - **`search_history` tool.** Searches raw session JSONL logs for past
   conversations. Use when the user asks "what did we talk about last time?"
   — the curated memory files hold facts; this tool finds transcripts.
+- **External-agent tools.** `tools/external_agents.py` exposes other models
+  and CLIs as voice-callable tools, grouped under the `agents` category.
+  Three tiers: (1) **consult** — sync `ask_kimi`, `ask_deepseek_reasoner`,
+  `ask_gemini` make a single OpenAI-compatible chat call and return text;
+  (2) **spawn** — `spawn_claude_code`, `spawn_codex`, `spawn_gemini_cli` fork
+  a CLI subprocess and return a `task_id` immediately, with state tracked by
+  `tools/agent_runner.py` in `.voice-agent/agent-tasks/<task_id>/`;
+  (3) **hermes** — `hermes_chat` / `hermes_spawn` talk to the user's local
+  Hermes agent over HTTP. All endpoints, binaries, and concurrency caps
+  live under `agents:` in `config.yaml`. Missing keys or missing binaries
+  degrade per-tool (return an error string) — the bot stays usable.
+  `list_agent_tasks`, `get_agent_task`, and `cancel_agent_task` work
+  across every spawn tool. Status reconciliation is lazy: a `running`
+  task whose pid is dead gets marked `orphaned` on next read, so bot
+  restarts don't leak stale state.
 - **Memory architecture.** Follows the Hermes agent pattern: frozen curated
   facts (USER.md/MEMORY.md, loaded once per session for prefix caching)
   + fluid session logs (JSONL, searchable) + optional pluggable providers.

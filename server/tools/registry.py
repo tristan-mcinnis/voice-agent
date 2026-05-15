@@ -59,7 +59,7 @@ class ToolRegistry:
     # Stable category order in the capability summary — read top-to-bottom so
     # related tools cluster naturally for the LLM.
     _CATEGORY_ORDER = (
-        "input", "files", "browser", "vision", "system", "web", "demo", "misc",
+        "input", "files", "browser", "vision", "system", "web", "agents", "demo", "misc",
     )
 
     def __init__(self) -> None:
