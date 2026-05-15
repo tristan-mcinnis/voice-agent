@@ -65,13 +65,41 @@ MEMORY_CHAR_LIMIT = 2200
 # appear in the prompt snapshot.
 # ---------------------------------------------------------------------------
 
-_shared_layer: "MemoryLayer | None" = None
+_shared_layer: "object | None" = None
 
 
-def get_memory_layer() -> "MemoryLayer":
-    """Return the process-wide ``MemoryLayer``, constructed lazily."""
+def get_memory_layer() -> "object":
+    """Return the process-wide memory backend, constructed lazily.
+
+    Backend selection: reads ``memory.backend`` from config when available
+    (``"file"`` or ``"agentmemory"``); when config hasn't been initialised
+    yet (tests, smoke scripts) falls back to the file backend so nothing
+    has to know about the seam.
+    """
     global _shared_layer
-    if _shared_layer is None:
+    if _shared_layer is not None:
+        return _shared_layer
+
+    backend = "file"
+    am_cfg = None
+    try:
+        from config import get_config
+        cfg = get_config()
+        backend = cfg.memory.backend
+        am_cfg = cfg.memory.agentmemory
+    except Exception:
+        # No config loaded yet — file backend is always safe.
+        pass
+
+    if backend == "agentmemory" and am_cfg is not None:
+        from agent.agentmemory_backend import AgentMemoryBackend
+        _shared_layer = AgentMemoryBackend(
+            ws_url=am_cfg.ws_url,
+            project_user=am_cfg.project_user,
+            project_memory=am_cfg.project_memory,
+            timeout=am_cfg.timeout,
+        )
+    else:
         _shared_layer = MemoryLayer()
     return _shared_layer
 

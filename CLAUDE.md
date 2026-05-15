@@ -193,6 +193,16 @@ Key facts:
 - **`search_history` tool.** Searches raw session JSONL logs for past
   conversations. Use when the user asks "what did we talk about last time?"
   — the curated memory files hold facts; this tool finds transcripts.
+- **TokenJuice compression.** `tools/compression.py` runs every tool result
+  through a pure reduction (HTML→text, script/style/comment drop, entity
+  decode, URL shortening over `url_max_chars`, control-char strip,
+  whitespace collapse, optional hard cap) before the LLM ever sees it.
+  Wired in `tools/registry.py:_make_handler` so it applies to *all* tools
+  uniformly. Identifier-shaped keys (`exit_code`, `image_path`, `task_id`,
+  `pid`, `status`, …) are skipped so paths and ids survive intact. Every
+  `tool-result` session-log event carries `bytes_before` / `bytes_after`,
+  so `scripts/summarize_session.py` (or just `jq`) tells you which tools
+  benefit. Config lives under `tool_compression:` in `config.yaml`.
 - **External-agent tools.** `tools/external_agents.py` exposes other models
   and CLIs as voice-callable tools, grouped under the `agents` category.
   Three tiers: (1) **consult** — sync `ask_kimi`, `ask_deepseek_reasoner`,

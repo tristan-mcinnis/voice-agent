@@ -19,6 +19,30 @@ from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.frames.frames import TTSSpeakFrame
 
+from tools.compression import (
+    CompressionOptions,
+    DEFAULT_OPTIONS,
+    compress_result,
+    measure,
+)
+
+
+# Process-wide compression policy. ``set_compression_options`` updates it
+# from config at startup; tests can override directly. Defaults to the
+# library defaults (enabled, sensible knobs) so importing the registry in
+# isolation still produces compressed results.
+_COMPRESSION: CompressionOptions = DEFAULT_OPTIONS
+
+
+def set_compression_options(options: CompressionOptions) -> None:
+    """Install the compression policy used by every tool result."""
+    global _COMPRESSION
+    _COMPRESSION = options
+
+
+def get_compression_options() -> CompressionOptions:
+    return _COMPRESSION
+
 
 class BaseTool:
     """Declarative tool: name + description + JSON-schema params + execute().
@@ -163,11 +187,26 @@ def _make_handler(tool: BaseTool, session_log=None) -> Callable:
             await params.result_callback({"result": f"Tool {tool.name} failed: {err}"})
             return
 
+        before = measure(result)
+        compressed = compress_result(result, _COMPRESSION)
+        after = measure(compressed)
+        if _COMPRESSION.enabled and before > 0 and after < before:
+            logger.debug(
+                f"tool {tool.name}: compressed {before}→{after} chars "
+                f"({100 * (before - after) / before:.0f}% reduction)"
+            )
+
         if session_log is not None:
-            session_log.event("tool-result", name=tool.name, result=result)
-        if isinstance(result, dict):
-            await params.result_callback(result)
+            session_log.event(
+                "tool-result",
+                name=tool.name,
+                result=compressed,
+                bytes_before=before,
+                bytes_after=after,
+            )
+        if isinstance(compressed, dict):
+            await params.result_callback(compressed)
         else:
-            await params.result_callback({"result": result})
+            await params.result_callback({"result": compressed})
 
     return handler

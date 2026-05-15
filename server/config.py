@@ -202,6 +202,50 @@ class AgentsConfig:
 
 
 @dataclass(frozen=True)
+class AgentMemoryConfig:
+    """Connection knobs for the rohitg00/agentmemory backend (via iii SDK)."""
+    ws_url: str = "ws://localhost:49134"
+    project_user: str = "voice-agent-user"
+    project_memory: str = "voice-agent-memory"
+    timeout: float = 10.0
+
+
+@dataclass(frozen=True)
+class MemoryConfig:
+    """Pick where persistent memory lives.
+
+    ``file`` (default) — local ``USER.md`` / ``MEMORY.md`` files, the
+    original behavior. Frozen-prefix-cache friendly.
+
+    ``agentmemory`` — point at a self-hosted rohitg00/agentmemory
+    instance so the same durable memory is shared with Claude Code,
+    Cursor, Codex, etc. Requires ``pip install iii-sdk`` and a running
+    iii service. See ``agent/agentmemory_backend.py``.
+    """
+    backend: str = "file"
+    agentmemory: AgentMemoryConfig = field(default_factory=AgentMemoryConfig)
+
+
+@dataclass(frozen=True)
+class ToolCompressionConfig:
+    """TokenJuice — reduce tool-result tokens before they hit the LLM.
+
+    Tool outputs (web scrapes, file dumps, search payloads) often carry
+    HTML tags, padding URLs, and runs of whitespace the LLM never reads.
+    Stripping them at the registry handler shrinks every turn's input,
+    cuts cost, and protects the frozen-prefix cache from getting pushed
+    out by noisy results. See `tools/compression.py`.
+    """
+    enabled: bool = True
+    strip_html: bool = True
+    shorten_urls: bool = True
+    url_max_chars: int = 80
+    collapse_whitespace: bool = True
+    strip_control: bool = True
+    max_chars: int = 0          # 0 = unlimited per-result cap
+
+
+@dataclass(frozen=True)
 class ComputerUseConfig:
     """Actuation backend for click/type/key/scroll/move.
 
@@ -231,6 +275,8 @@ class Config:
     hotkey: HotkeyConfig
     computer_use: ComputerUseConfig
     agents: AgentsConfig
+    tool_compression: ToolCompressionConfig = field(default_factory=ToolCompressionConfig)
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
 
 
 def _parse_config(path: Path) -> Config:
@@ -258,6 +304,16 @@ def _parse_config(path: Path) -> Config:
 
     computer_use_raw = data.get("computer_use") or {}
     computer_use = ComputerUseConfig(**computer_use_raw)
+
+    tool_compression_raw = data.get("tool_compression") or {}
+    tool_compression = ToolCompressionConfig(**tool_compression_raw)
+
+    memory_raw = dict(data.get("memory") or {})
+    am_raw = memory_raw.pop("agentmemory", None) or {}
+    memory = MemoryConfig(
+        backend=memory_raw.get("backend", "file"),
+        agentmemory=AgentMemoryConfig(**am_raw),
+    )
 
     agents_raw = data.get("agents") or {}
     consult_raw = agents_raw.get("consult") or {}
@@ -290,6 +346,8 @@ def _parse_config(path: Path) -> Config:
         hotkey=hotkey,
         computer_use=computer_use,
         agents=agents,
+        tool_compression=tool_compression,
+        memory=memory,
     )
 
 

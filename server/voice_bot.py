@@ -152,6 +152,22 @@ def build_components(
     init_vision(cfg.vision)
     tools_module.register_all()
 
+    # TokenJuice — install the compression policy before the LLM ever sees
+    # a tool result. Config knobs live under `tool_compression:` in
+    # config.yaml; defaults are sensible if the section is omitted.
+    from tools.compression import CompressionOptions
+    from tools.registry import set_compression_options
+    tc = cfg.tool_compression
+    set_compression_options(CompressionOptions(
+        enabled=tc.enabled,
+        strip_html=tc.strip_html,
+        shorten_urls=tc.shorten_urls,
+        url_max_chars=tc.url_max_chars,
+        collapse_whitespace=tc.collapse_whitespace,
+        strip_control=tc.strip_control,
+        max_chars=tc.max_chars,
+    ))
+
     stt = build_stt(cfg)
     tts = build_tts(cfg)
     llm = build_llm(cfg)

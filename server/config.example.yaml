@@ -156,6 +156,33 @@ computer_use:
   cua_binary: cua-driver    # name on PATH, or absolute path
   cua_timeout: 10.0         # seconds per cua-driver RPC
 
+# Persistent memory backend. `file` (default) stores entries in
+# .voice-agent/memories/{USER.md, MEMORY.md} on disk. `agentmemory` points
+# at a self-hosted rohitg00/agentmemory instance over WebSocket via the iii
+# SDK so the same durable memory is shared with Claude Code, Cursor, Codex,
+# OpenCode, etc. Requires `pip install iii-sdk` and a running iii service.
+memory:
+  backend: file              # file | agentmemory
+  agentmemory:
+    ws_url: ws://localhost:49134
+    project_user: voice-agent-user
+    project_memory: voice-agent-memory
+    timeout: 10.0
+
+# TokenJuice — compress tool results before they reach the LLM. Strips HTML,
+# shortens long URLs, removes control chars, collapses whitespace. See
+# tools/compression.py. Reductions are logged at debug level and to the
+# session log (bytes_before / bytes_after on every tool-result event), so
+# you can measure the win per tool.
+tool_compression:
+  enabled: true
+  strip_html: true
+  shorten_urls: true
+  url_max_chars: 80         # URLs longer than this are truncated with '…'
+  collapse_whitespace: true
+  strip_control: true
+  max_chars: 0              # 0 = unlimited; otherwise hard-cap per result
+
 # External agents — connect the voice bot to other LLMs and coding agents so
 # it can ask them questions or delegate long-running tasks. See
 # tools/external_agents.py for details on each tool. Three tiers:
