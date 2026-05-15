@@ -30,6 +30,9 @@ server/
     web.py                web search, weather demo + tool classes (impl in execute())
     memory.py             memory tool (add/replace/list USER.md, MEMORY.md)
     search_history.py     search past session logs for conversation recall
+    mcp_client.py         generic MCP-over-stdio client (JSON-RPC 2.0)
+    mcp_tools.py          dynamic BaseTool registration for config.mcp_servers
+    cua_backend.py        cua-driver wrapper (uses mcp_client)
 
   processors/             pipeline FrameProcessor stages
     echo_suppressor.py    drops STT frames while bot speaks
@@ -47,6 +50,8 @@ server/
       test_vision.py
       test_files.py
       test_connection_rendezvous.py
+      test_mcp_client.py    summariser + name/schema helpers
+      test_mcp_tools.py     dynamic registration flow w/ fake client
 
   docs/adr/               architecture decision records
   experiments/aec/        archived Speex AEC experiment
@@ -278,6 +283,37 @@ MCP-stdio client) plus a small `_try_cua_backend()` resolver at the top of
 `tools/computer_use.py`. Read-only desktop tools in `tools/desktop.py` are
 unaffected — they stay on AppleScript regardless of backend. Removal steps
 are documented in the `cua_backend.py` module docstring.
+
+### MCP server adapter
+
+Generic plug for any MCP-over-stdio server (Home Assistant, Linear,
+Playwright, filesystem, …). Configured via `mcp_servers:` in `config.yaml`;
+each entry is spawned at startup by `tools/__init__.py.register_all()` (the
+same call that imports the static tool modules), its `tools/list` is
+enumerated, and every discovered tool is registered as a dynamic `BaseTool`
+subclass under `{server_name}__{tool_name}`. The double-underscore separator
+keeps names inside OpenAI's function-name regex; over-long names are
+truncated with a deterministic hash suffix.
+
+- **Reusing the cua plumbing.** The JSON-RPC client lives in
+  `tools/mcp_client.py` (`MCPStdioClient`, `MCPClientError`,
+  `summarise_mcp_result`). `tools/cua_backend.py` is a thin wrapper around
+  it; new MCP servers wire in via `tools/mcp_tools.py` without touching
+  cua-specific code.
+- **Failure model.** Missing binaries, handshake errors, schema problems,
+  duplicate registry names — all log a warning and continue. The bot stays
+  usable; that server's tools are simply absent from the registry. A failed
+  server shows up as `DOWN` in `mcp_status`.
+- **Filtering.** `include`/`exclude` lists per server let you cherry-pick or
+  blacklist individual tools. Useful for verbose vendor servers where only a
+  handful of tools matter for voice.
+- **Lifetimes.** Subprocesses are kept alive for the process lifetime; an
+  `atexit` hook calls `shutdown()` on each. Calls are serialised per server
+  by an internal io-lock — fine for sequential voice turns.
+- **`mcp_status` tool.** Diagnostic — lists every configured server, whether
+  it started, the live tool inventory, and which names made it into the
+  registry. Invoke from a session to verify a new MCP server before relying
+  on its tools. Sister of `cua_status`.
 
 ### ADRs (`server/docs/adr/`)
 

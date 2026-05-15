@@ -142,6 +142,43 @@ class HotkeyConfig:
 
 
 @dataclass(frozen=True)
+class MCPServerConfig:
+    """One MCP-over-stdio server to expose to the tool registry.
+
+    At startup, ``tools.mcp_tools`` spawns each enabled entry, runs the
+    JSON-RPC handshake, calls ``tools/list``, and registers each discovered
+    tool as ``{name}__{tool_name}``. Connection failures are non-fatal —
+    the bot logs a warning and stays usable.
+
+    Fields:
+      name      Short identifier; used as the registry-tool prefix.
+                Must be a valid Python identifier slice (letters / digits
+                / underscores) so the resulting tool names match the
+                OpenAI function-name regex.
+      command   Executable name (resolved against PATH) or absolute path.
+      args      Extra argv tokens passed to the server.
+      env       Additional environment variables merged on top of os.environ
+                when spawning the server (e.g. API keys, config paths).
+      enabled   Skip this server when false. Use to keep config templates
+                ready-to-go without paying spawn cost.
+      category  Registry category for the auto-generated capability summary
+                in the system prompt.
+      timeout   Seconds per RPC round-trip.
+      include   If non-empty, only register these tool names.
+      exclude   Never register these tool names. Takes precedence over include.
+    """
+    name: str
+    command: str
+    args: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
+    enabled: bool = True
+    category: str = "misc"
+    timeout: float = 30.0
+    include: list[str] = field(default_factory=list)
+    exclude: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class ComputerUseConfig:
     """Actuation backend for click/type/key/scroll/move.
 
@@ -170,6 +207,7 @@ class Config:
     turn: TurnConfig
     hotkey: HotkeyConfig
     computer_use: ComputerUseConfig
+    mcp_servers: list[MCPServerConfig] = field(default_factory=list)
 
 
 def _parse_config(path: Path) -> Config:
@@ -198,6 +236,9 @@ def _parse_config(path: Path) -> Config:
     computer_use_raw = data.get("computer_use") or {}
     computer_use = ComputerUseConfig(**computer_use_raw)
 
+    mcp_servers_raw = data.get("mcp_servers") or []
+    mcp_servers = [MCPServerConfig(**entry) for entry in mcp_servers_raw]
+
     return Config(
         llm=LLMConfig(**data["llm"]),
         stt=STTConfig(**data["stt"]),
@@ -209,6 +250,7 @@ def _parse_config(path: Path) -> Config:
         turn=turn,
         hotkey=hotkey,
         computer_use=computer_use,
+        mcp_servers=mcp_servers,
     )
 
 

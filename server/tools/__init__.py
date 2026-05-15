@@ -10,6 +10,7 @@ Domain-specific tool implementations live in:
   - web.py       — web search and external APIs
   - memory.py    — persistent memory management
   - search_history.py — past session conversation search
+  - mcp_tools.py — dynamic registration of every `config.mcp_servers` entry
 
 Call ``register_all()`` once at startup to import and register every tool.
 Importing this package alone does NOT trigger registration — the caller
@@ -39,6 +40,10 @@ _TOOL_MODULES: list[tuple[str, str]] = [
     ("tools.web", "web tools"),
     ("tools.memory", "memory tools"),
     ("tools.search_history", "search-history tools"),
+    # mcp_tools must come last so the static tools are registered first;
+    # the MCPStatusTool's import-time decorator goes through cleanly even
+    # when config.mcp_servers is empty.
+    ("tools.mcp_tools", "MCP server tools"),
 ]
 
 
@@ -48,6 +53,10 @@ def register_all() -> None:
     Call once at startup (e.g. from ``voice_bot.build_components()``).
     After this returns, ``REGISTRY`` is populated and ``register_handlers()``
     can wire tools onto the LLM.
+
+    After the static modules import, ``tools.mcp_tools.register_mcp_servers()``
+    is invoked to spawn every enabled ``config.mcp_servers`` entry and
+    register its discovered tools.
     """
     for module_name, label in _TOOL_MODULES:
         try:
@@ -56,6 +65,16 @@ def register_all() -> None:
             logger.warning(f"tools: skipping {label} ({module_name}) — import failed: {exc}")
         except Exception as exc:
             logger.warning(f"tools: skipping {label} ({module_name}) — {type(exc).__name__}: {exc}")
+
+    try:
+        from tools.mcp_tools import register_mcp_servers
+        register_mcp_servers()
+    except Exception as exc:
+        logger.warning(
+            f"tools: MCP server registration failed — "
+            f"{type(exc).__name__}: {exc}"
+        )
+
     logger.info(f"tools: {len(REGISTRY.all())} registered")
 
 

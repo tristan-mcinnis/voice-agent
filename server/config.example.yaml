@@ -156,6 +156,44 @@ computer_use:
   cua_binary: cua-driver    # name on PATH, or absolute path
   cua_timeout: 10.0         # seconds per cua-driver RPC
 
+# Generic MCP-over-stdio servers — each entry is spawned at startup, its
+# `tools/list` is enumerated, and every discovered tool is registered under
+# `{name}__{tool_name}`. Connection failures are non-fatal: the bot logs a
+# warning and stays usable; that server's tools are simply absent.
+#
+# Use to plug in vendor MCP servers (Home Assistant, Linear, Playwright,
+# filesystem, etc.) without writing per-tool Python. Call the `mcp_status`
+# tool from a session to verify the handshake and inspect the live inventory.
+#
+# Each entry:
+#   name      Short identifier; used as the registered-tool prefix.
+#             Keep it a-z / 0-9 / _ so the resulting names match the
+#             OpenAI function-name regex.
+#   command   Executable on PATH or absolute path.
+#   args      Extra argv tokens.
+#   env       Extra env vars merged on top of os.environ at spawn time.
+#   enabled   Skip without removing the block.
+#   category  Registry category for the system-prompt capability summary.
+#             Pick from: input | files | browser | vision | system | web | demo | misc.
+#   timeout   Per-RPC timeout, seconds.
+#   include   If set, only register these tool names.
+#   exclude   Never register these tool names. Wins over `include`.
+mcp_servers: []
+  # - name: filesystem
+  #   command: npx
+  #   args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/Documents"]
+  #   enabled: false
+  #   category: files
+  #   timeout: 15.0
+  #
+  # - name: ha
+  #   command: home-assistant-mcp
+  #   env:
+  #     HA_URL: "http://homeassistant.local:8123"
+  #     HA_TOKEN: "${HA_LONG_LIVED_TOKEN}"   # remember to export this in .env
+  #   enabled: false
+  #   category: system
+
 # System prompt the LLM sees at conversation start. Swap freely.
 system_prompt: |
   You are a friendly multimodal voice assistant.
